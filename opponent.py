@@ -1,7 +1,10 @@
 import random
 from extension.board_utils import list_legal_moves_for
+from agent import agent
 
 def opponent(board, player, var):
+    return agent(board, player, var)
+
     """"
     This is an example of an random-move Opponent
 
