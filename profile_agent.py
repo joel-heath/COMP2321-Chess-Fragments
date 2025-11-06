@@ -10,7 +10,7 @@ def profile_agent(agent_function, board, player, var):
     profiler.disable()
     stats = (Stats(profiler)
         .strip_dirs()
-        .sort_stats(SortKey.TIME) # or SortKey.CALLS
+        .sort_stats(SortKey.CUMULATIVE) # or SortKey.CALLS
     )
     stats.print_stats()
 
@@ -34,8 +34,8 @@ if __name__ == "__main__":
     player = players[0]
     var = [1, 30]  # [ply, thinking_time_budget]
 
-    time_agent(agent, board, player, var)
-    # profile_agent(agent, board, player, var)
+    # time_agent(agent, board, player, var)
+    profile_agent(agent, board, player, var)
 
 # measured in seconds
 

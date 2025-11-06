@@ -26,7 +26,7 @@ def print_once(msg: str):
         print_once_count += 1
 
 
-# == BOARD RULES ==
+# == BOARD STATE ==
 
 def is_draw(board: Board) -> str | None:
     rep_count = _update_repetition_count(board)
@@ -45,6 +45,13 @@ def current_player_is_in_check(board: Board) -> bool:
     king : King = next(piece for piece in player_pieces if isinstance(piece, King))
     is_attacked = king.is_attacked() # type: ignore[attr-defined]
     return is_attacked
+
+
+def clone_board(board: Board) -> Board:
+    board_clone: Board = board.clone()  # type: ignore[attr-defined]
+    if hasattr(board, "_rep_hist"):
+        board_clone._rep_hist = dict(board._rep_hist)  # type: ignore[attr-defined]
+    return board_clone
 
 
 # == EVALUATION ==
@@ -103,7 +110,7 @@ def evaluate_board(board: Board):
 
 
 def move_is_check(board: Board, piece: Piece, move_opt: MoveOption) -> bool:
-    board_clone = board.clone()                                                # type: ignore[attr-defined]
+    board_clone = clone_board(board)
     _, new_piece, new_move_opt = copy_piece_move(board_clone, piece, move_opt) # type: ignore[attr-defined]
     new_piece.move(new_move_opt)                                               # type: ignore[attr-defined]
     return current_player_is_in_check(board_clone)
@@ -173,7 +180,7 @@ def negamax(board: Board, depth: int, alpha: float, beta: float, start_time: flo
     moves.sort(key = lambda move: sortKey(board, move[0], move[1]), reverse=True)
     for piece, move_opt in moves:
         new_piece: Piece; new_move_opt: MoveOption; new_board: Board
-        new_board = board.clone()                                                # type: ignore[attr-defined]
+        new_board = clone_board(board)                                           # type: ignore[attr-defined]
         _, new_piece, new_move_opt = copy_piece_move(new_board, piece, move_opt) # type: ignore[attr-defined]
         new_piece.move(new_move_opt)                                             # type: ignore[attr-defined]
 
@@ -243,7 +250,7 @@ def agent(board: Board, player: Player, var: list[int]) -> tuple[Piece, MoveOpti
     # Keep searching deeper until we run out of time. Use clones per search to avoid
     # polluting the original board state.
     while True:
-        new_board = board.clone()  # type: ignore[attr-defined]
+        new_board = clone_board(board)  # type: ignore[attr-defined]
         value, move, time_exceeded = negamax(new_board, depth, float('-inf'), float('inf'), start_time, time_limit)
 
         if time_exceeded:
