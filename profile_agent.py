@@ -32,19 +32,19 @@ from test_fullgame import make_custom_board
 if __name__ == "__main__":
     board, players = make_custom_board(sample0)
     player = players[0]
-    var = [1, 30]  # [ply, thinking_time_budget]
+    var = [1, 40]  # [ply, thinking_time_budget]
 
-    # time_agent(agent, board, player, var)
-    profile_agent(agent, board, player, var)
+    time_agent(agent, board, player, var)
+    # profile_agent(agent, board, player, var)
 
 # measured in seconds
 
-# depth |       DFS | IDS
+# depth |       DFS | zobrist, PVS
 # ------|-----------|----
-#     1 |  0.025014 | 
-#     2 |  0.220387 |
-#     3 |  1.242618 |
-#     4 |  5.039525 |
-#     5 | 13.115289 |
-#     6 | 94.537617 |
+#     1 |  0.025014 | 0.027039
+#     2 |  0.220387 | 0.225629
+#     3 |  1.242618 | 0.657060
+#     4 |  5.039525 | 3.999219
+#     5 | 13.115289 | 11.208792
+#     6 | 94.537617 | 31.993133
 
