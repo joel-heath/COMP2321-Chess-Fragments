@@ -102,7 +102,6 @@ def update_hash(current_hash: int, piece: Piece, move_og: MoveOption, captured_p
 # == UNDOER ==
 # Assuming these imports are already present in your environment based on the previous context
 from typing import Any
-from chessmaker.chess.base import Board, Piece, Position, MoveOption, Square
 from chessmaker.chess.pieces import Pawn
 
 
@@ -126,6 +125,7 @@ def make_move(board: Board, piece: Piece, move_option: MoveOption) -> dict[str, 
     piece.move(move_option)                                                    # type: ignore[attr-defined]
 
     return undo_info
+
 
 def undo_move(board: Board, undo_info: dict[str, Any]):
     piece = undo_info['piece']
@@ -162,27 +162,19 @@ def undo_move(board: Board, undo_info: dict[str, Any]):
 
 repetition_history = {}
 
+
 def update_repetition_count(hashed_board: int) -> None:
     if hashed_board in repetition_history:
         repetition_history[hashed_board] += 1
     else:
         repetition_history[hashed_board] = 1
 
+
 def undo_repetition_count(hashed_board: int) -> None:
     if hashed_board in repetition_history:
         repetition_history[hashed_board] -= 1
         if repetition_history[hashed_board] <= 0:
             del repetition_history[hashed_board]
-
-
-def is_draw(board: Board, hashed_board: int) -> str | None:
-    if repetition_history[hashed_board] >= 5:
-        return "Draw - fivefold repetition"
-    return only_2kings(board)
-
-
-def is_loss(board) -> str | None:
-    return cannot_move(board)
 
 
 def current_player_is_in_check(board: Board) -> bool:
@@ -325,6 +317,9 @@ def negamax(board: Board, depth: int, alpha: float, beta: float, start_time: flo
         print_once("Time limit exceeded during search")
         return 0, None, True
     
+    if repetition_history[board_hash] >= 5:
+        return 0, None, False
+
     (memo_value, memo_move) = (None, None)
     if board_hash in memo:
         (memo_value, memo_move, memo_depth) = memo[board_hash]
@@ -333,9 +328,11 @@ def negamax(board: Board, depth: int, alpha: float, beta: float, start_time: flo
 
     if depth <= 0:
         return evaluate_board(board), None, False
-    if is_draw(board, board_hash):
+    
+    if only_2kings(board): # draw
         return 0, None, False
-    if is_loss(board):
+
+    if cannot_move(board): # loss for current player
         return -100_000 - depth, None, False
 
     player = board.current_player # type: ignore[attr-defined] (pylance is DUMBFOUNDINGLY stupid sometimes (all the time))
