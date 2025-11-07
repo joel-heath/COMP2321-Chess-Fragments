@@ -98,22 +98,85 @@ def update_hash(current_hash: int, piece: Piece, move_og: MoveOption, captured_p
 
 (zobrist_table, zobrist_black_to_move) = init_zobrist()
 
+
+# == UNDOER ==
+# Assuming these imports are already present in your environment based on the previous context
+from typing import Any
+from chessmaker.chess.base import Board, Piece, Position, MoveOption, Square
+from chessmaker.chess.pieces import Pawn
+
+
+def make_move(board: Board, piece: Piece, move_option: MoveOption) -> dict[str, Any]:
+    """Makes a move on the board and returns undo information."""
+    undo_info = {
+        'piece': piece,
+        'from_position': piece.position,                                       # type: ignore[attr-defined]
+        'to_position': move_option.position,
+        'captured_piece': get_captured_piece(board, move_option)
+    }
+
+    # if pawn log 
+    if isinstance(piece, Pawn):
+        undo_info['_moved_turns_ago'] = piece._moved_turns_ago                 # type: ignore[attr-defined]
+        undo_info['_last_position'] = piece._last_position                     # type: ignore[attr-defined]
+        undo_info['en_passant'] = move_option.extra.get('en_passant', False)
+        undo_info['direction'] = piece._direction.value                        # type: ignore[attr-defined]
+
+    # Move the piece
+    piece.move(move_option)                                                    # type: ignore[attr-defined]
+
+    return undo_info
+
+def undo_move(board: Board, undo_info: dict[str, Any]):
+    piece = undo_info['piece']
+    from_position = undo_info['from_position']
+    to_position = undo_info['to_position']
+    captured_piece = undo_info['captured_piece']
+    en_passant = undo_info.get('en_passant', False)
+
+    from_square = board.__getitem__(from_position)                                                     # type: ignore[attr-defined]
+    to_square = board.__getitem__(to_position)                                                         # type: ignore[attr-defined]
+    if en_passant:
+        # Remove the pawn that captured en passant
+        to_square.piece = None                                                                         # type: ignore[attr-defined]
+        # Adjust pawn to one further in `direction` as it had originally moved 2 squares
+        to_square = board.__getitem__(Position(to_position.x, to_position.y - undo_info['direction'])) # type: ignore[attr-defined]
+
+    from_square.piece = piece                                                                          # type: ignore[attr-defined]
+
+    if captured_piece:
+        to_square.piece = captured_piece                                                               # type: ignore[attr-defined]
+    else:
+        to_square.piece = None                                                                         # type: ignore[attr-defined]
+
+    if isinstance(piece, Pawn):
+        piece._moved_turns_ago = undo_info['_moved_turns_ago']                                         # type: ignore[attr-defined]
+        piece._last_position = undo_info['_last_position']                                             # type: ignore[attr-defined]
+
+
+    board.current_player = next(board.turn_iterator)                                                   # type: ignore[attr-defined]
+    # board.current_player = piece.player
+
+
 # == BOARD STATE ==
 
-def update_repetition_count(board: Board, hashed_board: int) -> int:
-    if not hasattr(board, "_rep_hist") or board._rep_hist is None:         # type: ignore[attr-defined]
-        board._rep_hist = {}                                               # type: ignore[attr-defined]
-    if hashed_board in board._rep_hist:                                    # type: ignore[attr-defined]
-        board._rep_hist[hashed_board] = board._rep_hist[hashed_board] + 1  # type: ignore[attr-defined]
-    else:
-        board._rep_hist[hashed_board] = 1                                  # type: ignore[attr-defined]
+repetition_history = {}
 
-    return board._rep_hist[hashed_board]                                   # type: ignore[attr-defined]
+def update_repetition_count(hashed_board: int) -> None:
+    if hashed_board in repetition_history:
+        repetition_history[hashed_board] += 1
+    else:
+        repetition_history[hashed_board] = 1
+
+def undo_repetition_count(hashed_board: int) -> None:
+    if hashed_board in repetition_history:
+        repetition_history[hashed_board] -= 1
+        if repetition_history[hashed_board] <= 0:
+            del repetition_history[hashed_board]
 
 
 def is_draw(board: Board, hashed_board: int) -> str | None:
-    rep_count = update_repetition_count(board, hashed_board)
-    if rep_count >= 5:
+    if repetition_history[hashed_board] >= 5:
         return "Draw - fivefold repetition"
     return only_2kings(board)
 
@@ -144,6 +207,7 @@ def get_captured_piece(board: Board, move_opt: MoveOption) -> Piece | None:
         captured_piece = captured_square.piece                 # type: ignore[attr-defined]
         return captured_piece
     return None
+
 
 # == EVALUATION ==
 
@@ -283,23 +347,25 @@ def negamax(board: Board, depth: int, alpha: float, beta: float, start_time: flo
     moves: list[Move] = list_legal_moves_for(board, player)
     moves.sort(key = lambda move: sort_key(board, move[0], move[1], memo_move), reverse=True)
     for piece, move_opt in moves:
-        new_piece: Piece; new_move_opt: MoveOption; new_board: Board
-        new_board = clone_board(board)                                           # type: ignore[attr-defined]
-        _, new_piece, new_move_opt = copy_piece_move(new_board, piece, move_opt) # type: ignore[attr-defined]
-        new_piece.move(new_move_opt)                                             # type: ignore[attr-defined]
-        captured_piece = new_board.__getitem__(next(iter(move_opt.captures))).piece if move_opt.captures else None # type: ignore[attr-defined]
+        # new_piece: Piece; new_move_opt: MoveOption; new_board: Board
+        captured_piece: Piece | None = get_captured_piece(board, move_opt)
         new_board_hash = update_hash(board_hash, piece, move_opt, captured_piece, zobrist_table, zobrist_black_to_move)
+        update_repetition_count(new_board_hash)
+        info = make_move(board, piece, move_opt)
 
         if first_move:
-            inverted_value, _, time_exceeded = negamax(new_board, depth - 1, -beta, -alpha, start_time, time_limit, new_board_hash)
+            inverted_value, _, time_exceeded = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, new_board_hash)
             value = -inverted_value
             first_move = False
         else:
-            value, _, time_exceeded = negamax(new_board, depth - 1, -(alpha + 1), -alpha, start_time, time_limit, new_board_hash)
+            value, _, time_exceeded = negamax(board, depth - 1, -(alpha + 1), -alpha, start_time, time_limit, new_board_hash)
             value = -value
             if not time_exceeded and value > alpha:
-                inverted_value, _, time_exceeded = negamax(new_board, depth - 1, -beta, -value, start_time, time_limit, new_board_hash)
+                inverted_value, _, time_exceeded = negamax(board, depth - 1, -beta, -value, start_time, time_limit, new_board_hash)
                 value = -inverted_value
+
+        undo_move(board, info)
+        undo_repetition_count(new_board_hash)
 
         if value > best_value:
             best_value = value
@@ -311,8 +377,6 @@ def negamax(board: Board, depth: int, alpha: float, beta: float, start_time: flo
 
         if time_exceeded:
             break
-
-
 
     memo[board_hash] = (best_value, best_move, depth)
     return best_value, best_move, time_exceeded
@@ -351,18 +415,18 @@ def agent(board: Board, player: Player, var: list[int]) -> Move:
     memo = {}
     take_notes(f"Ply: {var[0]}\ntime limit: {var[1]}\nmemo size: {len(memo)}\n")
 
-    starting_depth = 4
+    starting_depth = 1
 
     # Iterative deepening: progressively increase search depth while time remains.
     best_move = None
     best_value = float('-inf')
     depth = starting_depth
     board_hash = compute_hash(board, zobrist_table, zobrist_black_to_move)
+    update_repetition_count(board_hash)
 
-    # Keep searching deeper until we run out of time. Use clones per search to avoid
-    # polluting the original board state.
     while True:
-        new_board = clone_board(board)  # type: ignore[attr-defined]
+        #new_board = clone_board(board)  # type: ignore[attr-defined]
+        new_board = board
         value, move, time_exceeded = negamax(new_board, depth, float('-inf'), float('inf'), start_time, time_limit, board_hash)
 
         if time_exceeded:
@@ -379,13 +443,9 @@ def agent(board: Board, player: Player, var: list[int]) -> Move:
 
     print_once("")
 
-    # Ensure there's a selected move before proceeding
-    if best_move is not None:
-        value = best_value
-        piece, move_opt = best_move
-    else:
+    if best_move is None:
         raise Exception("No valid moves found by agent")
     
-    print(f"Selected move with evaluation value: {value}")
+    print(f"Selected move with evaluation value: {best_value}")
 
-    return piece, move_opt
+    return best_move
