@@ -373,9 +373,9 @@ def agent(board: Board, player: Player, var: list[int]) -> Move:
 
         best_move = move
         best_value = value
-        print_once(f"Completed depth {depth} (value = {best_value}, time = {time.perf_counter() - start_time:.6f}) ")
+        # print_once(f"Completed depth {depth} (value = {best_value}, time = {time.perf_counter() - start_time:.6f}) ")
         depth += 1
-        # break # ================================================== REMOVE AFTER TESTING =============================================
+        break # ================================================== REMOVE AFTER TESTING =============================================
 
     print_once("")
 

@@ -2,7 +2,11 @@ import random
 from extension.board_utils import list_legal_moves_for
 from agent import agent
 
+def deterministic_opponent(board, player, var):
+    return list_legal_moves_for(board, player)[0]
+
 def opponent(board, player, var):
+    return deterministic_opponent(board, player, var)
     # return agent(board, player, var)
 
     """
