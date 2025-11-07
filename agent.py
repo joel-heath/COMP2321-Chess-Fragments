@@ -1,7 +1,7 @@
 import time
 from extension.board_utils import list_legal_moves_for, copy_piece_move, take_notes
 from extension.board_rules import only_2kings, cannot_move
-from chessmaker.chess.base import Board, Player, Piece, MoveOption
+from chessmaker.chess.base import Board, Player, Piece, MoveOption, Position
 from chessmaker.chess.pieces import King
 from typing import Iterable
 
@@ -235,25 +235,35 @@ def evaluate_board(board: Board):
     Parameters
     ----------
     board: the current chess board
-    player: the current player
 
     Returns
     -------
     score: numerical evaluation of the board state
     """
     
-    score = 0
+    heuristic = 0
     current_player: Player = board.current_player  # type: ignore[attr-defined]
     pieces: Iterable[Piece] = board.get_pieces()   # type: ignore[attr-defined]
 
     for piece in pieces:
-        value = piece_value(piece)
+        score = piece_value(piece)
         piece_player: Player = piece.player        # type: ignore[attr-defined]
+        piece_position: Position = piece.position  # type: ignore[attr-defined]
+
+        if (isinstance(piece, Pawn)):
+            if piece_player.name == "black":
+                score += piece_position.y * 0.1
+            else:
+                score += (4 - piece_position.y) * 0.1
+
+
+
         if piece_player == current_player:
-            score += value
+            heuristic += score
         else:
-            score -= value
-    return score
+            heuristic -= score
+
+    return heuristic
 
 
 def move_is_check(board: Board, piece: Piece, move_opt: MoveOption) -> bool:
@@ -264,26 +274,30 @@ def move_is_check(board: Board, piece: Piece, move_opt: MoveOption) -> bool:
 
 
 def sort_key(board: Board, piece: Piece, move_opt: MoveOption, memo_move: Move | None) -> int:
-    score = 0
+    # Hash Move > Good Capture > Special Quiet > Good Quiet > Bad Capture > Bad Quiet
+    # Special Quiet: Killers / Counters / Promotions
     
-    # check if is check:
-    #if move_is_check(board, piece, move_opt):
-    #    score += 1000
+    score = 0
 
-    # What we previously computed to be best, even at a lower depth, is probably still best
+    # Hash Move
     if (piece, move_opt) == memo_move:
         return 2000
 
-    # Most Valuable Victim - Least Valuable Aggressor
     captured_piece = get_captured_piece(board, move_opt)
     if captured_piece:
         captured_value = piece_value(captured_piece)
         attacker_value = piece_value(piece)
-        score += 1000 + captured_value * 10 - attacker_value
+        
+        score += (captured_value * 10) - attacker_value # MVV-LVA
+
+        if (captured_value - attacker_value) > 0: # good capture, do before special quiet moves
+            score += 1000
+        else:                                     # bad capture, do after special quiet moves
+            score += 100
 
     # Promotion
     if hasattr(move_opt, 'promote'):
-        score += 900
+        score += 500
     
     return score
 
@@ -355,8 +369,8 @@ def negamax(board: Board, depth: int, alpha: float, beta: float, start_time: flo
             value = -inverted_value
             first_move = False
         else:
-            value, _, time_exceeded = negamax(board, depth - 1, -(alpha + 1), -alpha, start_time, time_limit, new_board_hash)
-            value = -value
+            inverted_value, _, time_exceeded = negamax(board, depth - 1, -(alpha + 1), -alpha, start_time, time_limit, new_board_hash)
+            value = -inverted_value
             if not time_exceeded and value > alpha:
                 inverted_value, _, time_exceeded = negamax(board, depth - 1, -beta, -value, start_time, time_limit, new_board_hash)
                 value = -inverted_value
@@ -405,6 +419,7 @@ def agent(board: Board, player: Player, var: list[int]) -> Move:
     - Use the timeout variable together with time.perf_counter()
     to ensure the agent returns its best move before the time limit expires.
     """
+
     start_time = time.perf_counter()
     time_limit = var[1] - 0.1  # Leave a small buffer
 
@@ -412,7 +427,7 @@ def agent(board: Board, player: Player, var: list[int]) -> Move:
     memo = {}
     take_notes(f"Ply: {var[0]}\ntime limit: {var[1]}\nmemo size: {len(memo)}\n")
 
-    starting_depth = 1
+    starting_depth = 4
 
     # Iterative deepening: progressively increase search depth while time remains.
     best_move = None
@@ -434,9 +449,9 @@ def agent(board: Board, player: Player, var: list[int]) -> Move:
 
         best_move = move
         best_value = value
-        print_once(f"Completed depth {depth} (value = {best_value}, time = {time.perf_counter() - start_time:.6f}) ")
+        # print_once(f"Completed depth {depth} (value = {best_value}, time = {time.perf_counter() - start_time:.6f}) ")
         depth += 1
-        # break # ================================================== REMOVE AFTER TESTING =============================================
+        break # ================================================== REMOVE AFTER TESTING =============================================
 
     print_once("")
 
