@@ -1,399 +1,802 @@
 import time
 from extension.board_utils import list_legal_moves_for, copy_piece_move, take_notes
 from extension.board_rules import only_2kings, cannot_move
-from chessmaker.chess.base import Board, Player, Piece, MoveOption, Position
-from chessmaker.chess.pieces import King
+from chessmaker.chess.base import Board as CM_Board, Player as CM_Player, Piece as CM_Piece, MoveOption as CM_MoveOption, Position as CM_Position, Square as CM_Square
+from chessmaker.chess.pieces import King as CM_King
 from typing import Iterable
 
-type Move = tuple[Piece, MoveOption]
-
-# == DEBUGGING ==
-print_once_last_message: str = ""
-print_once_count: int = 0
-
-def print_once(msg: str):
-    global print_once_last_message, print_once_count
-    """Print a message if it is not the same as the last printed message."""
-
-    if msg != print_once_last_message:
-        if print_once_count > 0:
-            if print_once_count > 1:
-                print(f" x{print_once_count}")
-            print()
-
-        print(msg, end="")
-        print_once_last_message = msg
-        print_once_count = 1
-    else:
-        print_once_count += 1
+type CM_Move = tuple[CM_Piece, CM_MoveOption]
 
 
-# == ZOBRIST HASHING ==
+### == Below be the C# agent translated into Python == ###
+### == Beware of befuddling code == ###
+### == Agent function at bottom of file == ###
+
+import sys
+import enum
 import random
-ZobristTable = list[list[list[int]]]
+import time
+from dataclasses import dataclass
+from typing import List, Tuple, Dict, Optional, Iterable, NamedTuple, Set
+from functools import total_ordering
 
-def piece_index(piece: str, color: str) -> int:
-    if piece == "Pawn":
-        id = 0
-    elif piece == "Knight":
-        id = 1
-    elif piece == "Right":
-        id = 2
-    elif piece == "King":
-        id = 3
-    elif piece == "Bishop":
-        id = 4
-    else: # p == "Queen"
-        id = 5
+# =============================================================================
+# Position.cs
+# =============================================================================
+@total_ordering
+class Position:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
 
-    if color == "white":
-        return id
-    else: # c == "black"
-        return id + 6
+    @staticmethod
+    def _to_char(index: int) -> str:
+        return chr(ord('a') + index)
 
+    def __str__(self) -> str:
+        return f"{self._to_char(self.x)}{self.y + 1}"
 
-def random_int() -> int:
-    min = 0
-    max = pow(2, 64)
-    return random.randint(min, max)
+    def __repr__(self) -> str:
+        return f"Position(x={self.x}, y={self.y})"
 
+    def __add__(self, other: 'Position') -> 'Position':
+        return Position(self.x + other.x, self.y + other.y)
 
-def init_zobrist() -> tuple[ZobristTable, int]:
-    zobrist_table = [[[random_int() for _ in range(12)] for _ in range(5)] for _ in range(5)]
-    zobrist_black_to_move = random_int() # Add this
-    return zobrist_table, zobrist_black_to_move
+    def __sub__(self, other: 'Position') -> 'Position':
+        return Position(self.x - other.x, self.y - other.y)
 
-
-def compute_hash(board: Board, zobrist_table: ZobristTable, zobrist_black_to_move: int) -> int:
-    h = 0
-    pieces: list[Piece] = board.get_pieces()                # type: ignore[attr-defined]
-    for piece in pieces:
-        index = piece_index(piece.name, piece.player.name)  # type: ignore[attr-defined]
-        position = piece.position                           # type: ignore[attr-defined]
-        h ^= zobrist_table[position[0]][position[1]][index]
-    if board.current_player.name == "black":                # type: ignore[attr-defined]
-        h ^= zobrist_black_to_move
-    return h
-
-
-def update_hash(current_hash: int, piece: Piece, move_og: MoveOption, captured_piece: Piece | None, zobrist_table: ZobristTable, zobrist_black_to_move: int) -> int:
-    capturer_index = piece_index(piece.name, piece.player.name)                                               # type: ignore[attr-defined]
-    captured_index = piece_index(captured_piece.name, captured_piece.player.name) if captured_piece else None # type: ignore[attr-defined]
-
-    # XOR out the piece from its old square
-    current_hash ^= zobrist_table[piece.position.x][piece.position.y][capturer_index] # type: ignore[attr-defined]
-
-    # XOR out the captured piece (if any)
-    if captured_piece:
-        current_hash ^= zobrist_table[captured_piece.position.x][captured_piece.position.y][captured_index] # type: ignore[attr-defined]
-
-    # XOR in the piece at its new square
-    current_hash ^= zobrist_table[move_og.position.x][move_og.position.y][capturer_index]
-
-    # XOR the side to move
-    current_hash ^= zobrist_black_to_move
-
-    return current_hash
-
-
-(zobrist_table, zobrist_black_to_move) = init_zobrist()
-
-
-# == UNDOER ==
-# Assuming these imports are already present in your environment based on the previous context
-from typing import Any
-from chessmaker.chess.pieces import Pawn
-
-
-def make_move(board: Board, piece: Piece, move_option: MoveOption) -> dict[str, Any]:
-    """Makes a move on the board and returns undo information."""
-    undo_info = {
-        'piece': piece,
-        'from_position': piece.position,                                       # type: ignore[attr-defined]
-        'to_position': move_option.position,
-        'captured_piece': get_captured_piece(board, move_option)
-    }
-
-    # if pawn log 
-    if isinstance(piece, Pawn):
-        undo_info['_moved_turns_ago'] = piece._moved_turns_ago                 # type: ignore[attr-defined]
-        undo_info['_last_position'] = piece._last_position                     # type: ignore[attr-defined]
-        undo_info['en_passant'] = move_option.extra.get('en_passant', False)
-        undo_info['direction'] = piece._direction.value                        # type: ignore[attr-defined]
-
-    # Move the piece
-    piece.move(move_option)                                                    # type: ignore[attr-defined]
-
-    return undo_info
-
-
-def undo_move(board: Board, undo_info: dict[str, Any]):
-    piece = undo_info['piece']
-    from_position = undo_info['from_position']
-    to_position = undo_info['to_position']
-    captured_piece = undo_info['captured_piece']
-    en_passant = undo_info.get('en_passant', False)
-
-    from_square = board.__getitem__(from_position)                                                     # type: ignore[attr-defined]
-    to_square = board.__getitem__(to_position)                                                         # type: ignore[attr-defined]
-    if en_passant:
-        # Remove the pawn that captured en passant
-        to_square.piece = None                                                                         # type: ignore[attr-defined]
-        # Adjust pawn to one further in `direction` as it had originally moved 2 squares
-        to_square = board.__getitem__(Position(to_position.x, to_position.y - undo_info['direction'])) # type: ignore[attr-defined]
-
-    from_square.piece = piece                                                                          # type: ignore[attr-defined]
-
-    if captured_piece:
-        to_square.piece = captured_piece                                                               # type: ignore[attr-defined]
-    else:
-        to_square.piece = None                                                                         # type: ignore[attr-defined]
-
-    if isinstance(piece, Pawn):
-        piece._moved_turns_ago = undo_info['_moved_turns_ago']                                         # type: ignore[attr-defined]
-        piece._last_position = undo_info['_last_position']                                             # type: ignore[attr-defined]
-
-
-    board.current_player = next(board.turn_iterator)                                                   # type: ignore[attr-defined]
-    # board.current_player = piece.player
-
-
-# == BOARD STATE ==
-
-repetition_history = {}
-
-
-def update_repetition_count(hashed_board: int) -> None:
-    if hashed_board in repetition_history:
-        repetition_history[hashed_board] += 1
-    else:
-        repetition_history[hashed_board] = 1
-
-
-def undo_repetition_count(hashed_board: int) -> None:
-    if hashed_board in repetition_history:
-        repetition_history[hashed_board] -= 1
-        if repetition_history[hashed_board] <= 0:
-            del repetition_history[hashed_board]
-
-
-def current_player_is_in_check(board: Board) -> bool:
-    current_player: Player = board.current_player # type: ignore[attr-defined]
-    player_pieces: Iterable[Piece] = board.get_player_pieces(current_player) # type: ignore[attr-defined]
-    king : King = next(piece for piece in player_pieces if isinstance(piece, King))
-    is_attacked = king.is_attacked() # type: ignore[attr-defined]
-    return is_attacked
-
-
-def clone_board(board: Board) -> Board:
-    board_clone: Board = board.clone()  # type: ignore[attr-defined]
-    if hasattr(board, "_rep_hist"):
-        board_clone._rep_hist = dict(board._rep_hist)  # type: ignore[attr-defined]
-    return board_clone
-
-
-def get_captured_piece(board: Board, move_opt: MoveOption) -> Piece | None:
-    if move_opt.captures:
-        captured_position = next(iter(move_opt.captures))
-        captured_square = board.__getitem__(captured_position) # type: ignore[attr-defined]
-        captured_piece = captured_square.piece                 # type: ignore[attr-defined]
-        return captured_piece
-    return None
-
-
-# == EVALUATION ==
-
-def piece_value(piece: Piece) -> int:
-    """
-    Returns the value of a piece based on its type.
-    """
-    piece_name: str = piece.name # type: ignore[attr-defined]
-
-    if piece_name == "Pawn":
-        return 1
-    elif piece_name == "Knight":
-        return 3
-    elif piece_name == "Bishop":
-        return 3
-    elif piece_name == "Rook":
-        return 5
-    elif piece_name == "Right":
-        return 7
-    elif piece_name == "Queen":
-        return 9
-    elif piece_name == "King":
-        return 0
-    return 0
-
-
-def evaluate_board(board: Board):
-    """
-    A simple evaluation function for the board.
-    This function should return a numerical value representing the desirability of the board state for the current player.
-    Positive values favor the current player, negative values favor the opponent.
-
-    Parameters
-    ----------
-    board: the current chess board
-
-    Returns
-    -------
-    score: numerical evaluation of the board state
-    """
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Position):
+            return (self.x == other.x and self.y == other.y) or (self.is_null() and other.is_null())
+        if isinstance(other, str):
+            return str(self) == other
+        if isinstance(other, tuple):
+            return (self.x, self.y) == other
+        return False
     
-    heuristic = 0
-    current_player: Player = board.current_player  # type: ignore[attr-defined]
-    pieces: Iterable[Piece] = board.get_pieces()   # type: ignore[attr-defined]
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, Position):
+            return NotImplemented
+        return (self.x, self.y) < (other.x, other.y)
 
-    for piece in pieces:
-        score = piece_value(piece)
-        piece_player: Player = piece.player        # type: ignore[attr-defined]
-        piece_position: Position = piece.position  # type: ignore[attr-defined]
+    def __hash__(self) -> int:
+        return hash((self.x, self.y))
 
-        if (isinstance(piece, Pawn)):
-            if piece_player.name == "black":
-                score += piece_position.y * 0.1
-            else:
-                score += (4 - piece_position.y) * 0.1
+    def is_valid(self) -> bool:
+        return 0 <= self.x < 5 and 0 <= self.y < 5
 
+    def is_null(self) -> bool:
+        return not self.is_valid()
 
-
-        if piece_player == current_player:
-            heuristic += score
-        else:
-            heuristic -= score
-
-    return heuristic
+Position.Null = Position(-1, -1)
 
 
-def move_is_check(board: Board, piece: Piece, move_opt: MoveOption) -> bool:
-    board_clone = clone_board(board)
-    _, new_piece, new_move_opt = copy_piece_move(board_clone, piece, move_opt) # type: ignore[attr-defined]
-    new_piece.move(new_move_opt)                                               # type: ignore[attr-defined]
-    return current_player_is_in_check(board_clone)
+# =============================================================================
+# PositionPair.cs
+# =============================================================================
+class PositionPair(NamedTuple):
+    From: Position
+    To: Position
 
 
-def sort_key(board: Board, piece: Piece, move_opt: MoveOption, memo_move: Move | None) -> int:
-    # Hash Move > Good Capture > Special Quiet > Good Quiet > Bad Capture > Bad Quiet
-    # Special Quiet: Killers / Counters / Promotions
-    
-    score = 0
+# =============================================================================
+# MoveInfo.cs
+# =============================================================================
+class ReducedMoveInfo(NamedTuple):
+    From: Position
+    To: Position
 
-    # Hash Move
-    if (piece, move_opt) == memo_move:
-        return 2000
+@dataclass(frozen=True)
+class MoveInfo:
+    From: Position
+    FromPiece: str
+    To: Position
+    ToPiece: str
+    EP: Position  # The piece position captured by en passant
+    EPPiece: str  # The piece captured by en passant
+    IsChecking: bool
+    IsMating: bool
+    IsPromotion: bool
+    IsLegal: bool
+    PreviousEnPassantTarget: Position
+    NewEnPassantTarget: Position
 
-    captured_piece = get_captured_piece(board, move_opt)
-    if captured_piece:
-        captured_value = piece_value(captured_piece)
-        attacker_value = piece_value(piece)
+    def to_reduced_move_info(self) -> ReducedMoveInfo:
+        return ReducedMoveInfo(self.From, self.To)
+
+# Used to represent default(MoveInfo)
+MoveInfo.Default = MoveInfo(
+    From=Position.Null,
+    FromPiece='.',
+    To=Position.Null,
+    ToPiece='.',
+    EP=Position.Null,
+    EPPiece='.',
+    IsChecking=False,
+    IsMating=False,
+    IsPromotion=False,
+    IsLegal=False,
+    PreviousEnPassantTarget=Position.Null,
+    NewEnPassantTarget=Position.Null
+)
+
+
+# =============================================================================
+# Board.cs
+# =============================================================================
+class Board:
+    # lowercase is black, uppercase is white
+    # [0, 0] is a1, [1, 0] is b1, ..., [4, 4] is e5
+    # to print in order, read the rows upside down. cols are correct.
+
+    def __init__(self, setup: Optional[str] = None):
+        self.board: List[List[str]] = [['.' for _ in range(5)] for _ in range(5)]
+        self._initialize_board(setup)
+
+    def _initialize_board(self, string_board: Optional[str] = None):
+        if string_board is None:
+            string_board = """
+n q k b r
+p p p p p
+. . . . .
+P P P P P
+R B K Q N
+"""
         
-        score += (captured_value * 10) - attacker_value # MVV-LVA
+        rows = string_board.strip().split('\n')
+        for r in range(5):
+            cols = rows[5 - r - 1].strip().split(' ')
+            for c in range(5):
+                self.board[c][r] = cols[c][0]
 
-        if (captured_value - attacker_value) > 0: # good capture, do before special quiet moves
-            score += 1000
-        else:                                     # bad capture, do after special quiet moves
-            score += 100
+    def __getitem__(self, key) -> str:
+        if isinstance(key, Position):
+            return self.board[key.x][key.y]
+        elif isinstance(key, tuple) and len(key) == 2:
+            return self.board[key[0]][key[1]]
+        raise TypeError("Index must be a Position or (x, y) tuple")
 
-    # Promotion
-    if hasattr(move_opt, 'promote'):
-        score += 500
-    
-    return score
-
-
-# == NEGAMAX WITH ALPHA-BETA PRUNING ==
-
-memo: dict[int, tuple[float, Move | None, int]] = {}
-
-def negamax(board: Board, depth: int, alpha: float, beta: float, start_time: float, time_limit: float, board_hash: int) -> tuple[float, Move | None, bool]:
-    """
-    Negamax search algorithm with alpha-beta pruning and time management.
-
-    Parameters
-    ----------
-    board: the current chess board
-    player: the current player
-    depth: current depth in the search tree
-    alpha: alpha value for pruning
-    beta: beta value for pruning
-    start_time: time when the search started
-    time_limit: maximum allowed time for the search
-
-    Returns
-    -------
-    best_value: the best evaluation value found
-    best_move: the best move found
-    time_exceeded: whether the time limit was exceeded
-    """
-    
-    if time.perf_counter() - start_time > time_limit:
-        print_once("Time limit exceeded during search")
-        return 0, None, True
-    
-    if repetition_history[board_hash] >= 5:
-        return 0, None, False
-
-    (memo_value, memo_move) = (None, None)
-    if board_hash in memo:
-        (memo_value, memo_move, memo_depth) = memo[board_hash]
-        if memo_depth >= depth:
-            return memo_value, memo_move, False
-
-    if depth <= 0:
-        return evaluate_board(board), None, False
-    
-    if only_2kings(board): # draw
-        return 0, None, False
-
-    if cannot_move(board): # loss for current player
-        return -100_000 - depth, None, False
-
-    player = board.current_player # type: ignore[attr-defined] (pylance is DUMBFOUNDINGLY stupid sometimes (all the time))
-    best_value = float('-inf')
-    best_move = None
-    time_exceeded = False
-    first_move = True
-
-    moves: list[Move] = list_legal_moves_for(board, player)
-    moves.sort(key = lambda move: sort_key(board, move[0], move[1], memo_move), reverse=True)
-    for piece, move_opt in moves:
-        # new_piece: Piece; new_move_opt: MoveOption; new_board: Board
-        captured_piece: Piece | None = get_captured_piece(board, move_opt)
-        new_board_hash = update_hash(board_hash, piece, move_opt, captured_piece, zobrist_table, zobrist_black_to_move)
-        update_repetition_count(new_board_hash)
-        info = make_move(board, piece, move_opt)
-
-        if first_move:
-            inverted_value, _, time_exceeded = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, new_board_hash)
-            value = -inverted_value
-            first_move = False
+    def __setitem__(self, key, value: str):
+        if isinstance(key, Position):
+            self.board[key.x][key.y] = value
+        elif isinstance(key, tuple) and len(key) == 2:
+            self.board[key[0]][key[1]] = value
         else:
-            inverted_value, _, time_exceeded = negamax(board, depth - 1, -(alpha + 1), -alpha, start_time, time_limit, new_board_hash)
-            value = -inverted_value
-            if not time_exceeded and value > alpha:
-                inverted_value, _, time_exceeded = negamax(board, depth - 1, -beta, -value, start_time, time_limit, new_board_hash)
-                value = -inverted_value
+            raise TypeError("Index must be a Position or (x, y) tuple")
 
-        undo_move(board, info)
-        undo_repetition_count(new_board_hash)
+    def __str__(self) -> str:
+        sb = []
+        for r in range(4, -1, -1):
+            for c in range(5):
+                sb.append(self.board[c][r])
+                sb.append(' ')
+            sb.append('\n')
+        return "".join(sb)
 
-        if value > best_value:
-            best_value = value
-            best_move = (piece, move_opt)
+    def print_board(self):
+        print(str(self))
 
-        alpha = max(alpha, best_value)
-        if alpha >= beta:
+
+# =============================================================================
+# DrawDetector.cs
+# =============================================================================
+class DrawDetector:
+    positions: Dict[int, int] = {}
+
+    @staticmethod
+    def moves_made() -> int:
+        return len(DrawDetector.positions)
+
+    @staticmethod
+    def do(hash_val: int):
+        DrawDetector.positions[hash_val] = DrawDetector.positions.get(hash_val, 0) + 1
+
+    @staticmethod
+    def undo(hash_val: int):
+        DrawDetector.positions[hash_val] -= 1
+        if DrawDetector.positions[hash_val] == 0:
+            del DrawDetector.positions[hash_val]
+
+    @staticmethod
+    def is_drawn(hash_val: int) -> bool:
+        return DrawDetector.positions.get(hash_val, 0) >= 5
+
+    @staticmethod
+    def check_for_draw() -> bool:
+        return any(v >= 5 for v in DrawDetector.positions.values())
+
+
+# =============================================================================
+# GameState.cs (and Zobrist.cs)
+# =============================================================================
+class GameState:
+    
+    # --- Zobrist.cs nested class ---
+    class Zobrist:
+        _random = random.Random(0)
+        zobrist_table: List[List[List[int]]] = []
+        black_to_move: int = 0
+        
+        @staticmethod
+        def _random_ulong() -> int:
+            # Return a 64-bit integer
+            return GameState.Zobrist._random.getrandbits(64)
+
+        @staticmethod
+        def _initialize():
+            GameState.Zobrist.black_to_move = GameState.Zobrist._random_ulong()
+            GameState.Zobrist.zobrist_table = [[[GameState.Zobrist._random_ulong() for _ in range(13)] for _ in range(5)] for _ in range(5)]
+        
+        @staticmethod
+        def compute_hash(game: 'GameState') -> int:
+            h = 0
+
+            for i in range(5):
+                for j in range(5):
+                    piece = game.board[i, j]
+                    if piece != '.':
+                        piece_index = GameState.Zobrist.index_of(piece)
+                        h ^= GameState.Zobrist.zobrist_table[i][j][piece_index]
+
+            if not game.whiteToMove:
+                h ^= GameState.Zobrist.black_to_move
+            
+            if game.enPassantTarget.is_valid():
+                h ^= GameState.Zobrist.zobrist_table[game.enPassantTarget.x][game.enPassantTarget.y][12]
+
+            return h
+
+        @staticmethod
+        def update_hash(current: int, move: MoveInfo) -> int:
+            from_index = GameState.Zobrist.index_of(move.FromPiece)
+            to_index = GameState.Zobrist.index_of(move.ToPiece)
+            ep_index = GameState.Zobrist.index_of(move.EPPiece)
+
+            # XOR out the piece from its old square
+            current ^= GameState.Zobrist.zobrist_table[move.From.x][move.From.y][from_index]
+
+            # XOR out the captured piece (if any)
+            if to_index != -1:
+                current ^= GameState.Zobrist.zobrist_table[move.To.x][move.To.y][to_index]
+
+            # XOR out the en passant captured pawn (if any)
+            if move.EPPiece != '.':
+                current ^= GameState.Zobrist.zobrist_table[move.EP.x][move.EP.y][ep_index]
+
+            # XOR in the piece at its new square
+            # Handle promotion
+            if move.IsPromotion:
+                promoted_piece_index = GameState.Zobrist.index_of('Q' if move.FromPiece.isupper() else 'q')
+                current ^= GameState.Zobrist.zobrist_table[move.To.x][move.To.y][promoted_piece_index]
+            else:
+                current ^= GameState.Zobrist.zobrist_table[move.To.x][move.To.y][from_index]
+
+
+            # STATE CHANGES
+
+            # XOR the side to move
+            current ^= GameState.Zobrist.black_to_move
+
+            # XOR out the old en passant square (if any)
+            if move.PreviousEnPassantTarget.is_valid():
+                current ^= GameState.Zobrist.zobrist_table[move.PreviousEnPassantTarget.x][move.PreviousEnPassantTarget.y][12]
+
+            # XOR in the new en passant square (if any)
+            if move.NewEnPassantTarget.is_valid():
+                current ^= GameState.Zobrist.zobrist_table[move.NewEnPassantTarget.x][move.NewEnPassantTarget.y][12]
+
+            return current
+
+        @staticmethod
+        def index_of(piece: str) -> int:
+            return {
+                'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5,
+                'p': 6, 'n': 7, 'b': 8, 'r': 9, 'q': 10, 'k': 11,
+                '*': 12, # en passant marker
+            }.get(piece, -1)
+
+    # --- End of Zobrist ---
+
+    rookDirections = [Position(0, 1), Position(1, 0), Position(-1, 0), Position(0, -1)]
+    bishopDirections = [Position(1, 1), Position(1, -1), Position(-1, 1), Position(-1, -1)]
+    queenDirections = rookDirections + bishopDirections
+    knightMoves = [Position(2, 1), Position(1, 2), Position(-1, 2), Position(-2, 1), 
+                   Position(-2, -1), Position(-1, -2), Position(1, -2), Position(2, -1)]
+
+    enPassantTarget: Position
+    board: Board
+    whiteToMove: bool
+
+    def __init__(self, setup: Optional[str] = None, whiteToMove: bool = True):
+        self.whiteToMove = whiteToMove
+        self.board = Board(setup)
+        self.enPassantTarget = Position.Null
+        # Initialize Zobrist table if not already done
+        if not GameState.Zobrist.zobrist_table:
+            GameState.Zobrist._initialize()
+
+    def piece_is_movers(self, piece: str) -> bool:
+        return piece.isupper() == self.whiteToMove
+
+    def _opponent_is_in_check(self) -> bool:
+        opponent_king = 'k' if self.whiteToMove else 'K'
+        return any(self.board[move.To] == opponent_king for move in self.get_moves())
+
+    def current_player_is_mated(self) -> bool:
+        return not any(self.get_legal_moves(limit_depth=True))
+
+    def is_drawn(self) -> bool:
+        # Draw if only two kings remain
+        return all(p == '.' or p == 'K' or p == 'k' for p, pos in self.get_positions())
+
+    def _move(self, move_from: Position, move_to: Position, limit_depth: bool = False) -> MoveInfo:
+        from_piece = self.board[move_from]
+        to_piece = self.board[move_to]
+        ep_piece = '.'
+        en_passant_taken = Position.Null
+        previous_en_passant_target = self.enPassantTarget
+        self.enPassantTarget = Position.Null
+
+        is_promotion = False
+        if from_piece == 'P' or from_piece == 'p':
+            if move_to.y == 0 or move_to.y == 4:
+                is_promotion = True
+            elif (move_from.y == 1 and move_to.y == 3) or (move_from.y == 3 and move_to.y == 1):
+                self.enPassantTarget = Position(move_from.x, (move_from.y + move_to.y) // 2)
+            elif move_to == previous_en_passant_target:
+                en_passant_taken = Position(previous_en_passant_target.x, previous_en_passant_target.y + (-1 if self.whiteToMove else 1))
+                ep_piece = self.board[en_passant_taken]
+                self.board[en_passant_taken] = '.'
+
+        self.board[move_to] = 'Q' if is_promotion and self.whiteToMove else 'q' if is_promotion else from_piece
+        self.board[move_from] = '.'
+
+        # check legality first: switch sides then check if we're in check
+        self.whiteToMove = not self.whiteToMove
+        is_legal = not self._opponent_is_in_check()
+        is_check = False
+        is_mate = False
+
+        if is_legal:
+            # switch back to our side, move is check if opponent is in check
+            self.whiteToMove = not self.whiteToMove
+            is_check = self._opponent_is_in_check()
+
+            # finally switch sides for next move
+            self.whiteToMove = not self.whiteToMove
+            is_mate = not limit_depth and self.current_player_is_mated()
+        
+        # else: early exit, no need to check for check/mate
+
+        return MoveInfo(
+            From=move_from,
+            FromPiece=from_piece,
+            To=move_to,
+            ToPiece=to_piece,
+            EP=en_passant_taken,
+            EPPiece=ep_piece,
+            IsChecking=is_check,
+            IsMating=is_mate,
+            IsPromotion=is_promotion,
+            IsLegal=is_legal,
+            PreviousEnPassantTarget=previous_en_passant_target,
+            NewEnPassantTarget=self.enPassantTarget
+        )
+
+    def apply_move(self, info: MoveInfo):
+        self.board[info.To] = ('Q' if self.whiteToMove else 'q') if info.IsPromotion else info.FromPiece
+        self.board[info.From] = '.'
+        if info.EP.is_valid():
+            self.board[info.EP] = '.'
+
+        self.whiteToMove = not self.whiteToMove
+        self.enPassantTarget = info.NewEnPassantTarget
+
+    def undo_move(self, info: MoveInfo):
+        self.board[info.From] = info.FromPiece
+        self.board[info.To] = info.ToPiece
+
+        if info.EP.is_valid():
+            self.board[info.EP] = info.EPPiece
+            # self.board[info.To] = '.' # This was commented out in C#, so kept here.
+
+        self.whiteToMove = not self.whiteToMove
+        self.enPassantTarget = info.PreviousEnPassantTarget
+
+    def get_legal_moves(self, limit_depth: bool = False) -> Iterable[MoveInfo]:
+        for move in self.get_moves():
+            move_info = self._move(move.From, move.To, limit_depth)
+            self.undo_move(move_info)  # _move modifies state, so we undo
+            if move_info.IsLegal:
+                yield move_info
+
+    def get_moves(self) -> Iterable[PositionPair]:
+        pieces = self._get_pieces_for_current_player()
+        for piece, pos in pieces:
+            if piece == 'P' or piece == 'p':
+                yield from self._get_pawn_moves(pos)
+            elif piece == 'N' or piece == 'n':
+                yield from self._apply_deltas(pos, GameState.knightMoves)
+            elif piece == 'R' or piece == 'r':
+                yield from self._raytrace_moves(pos, GameState.rookDirections)
+                yield from self._apply_deltas(pos, GameState.knightMoves)
+            elif piece == 'B' or piece == 'b':
+                yield from self._raytrace_moves(pos, GameState.bishopDirections)
+            elif piece == 'Q' or piece == 'q':
+                yield from self._raytrace_moves(pos, GameState.queenDirections)
+            elif piece == 'K' or piece == 'k':
+                yield from self._apply_deltas(pos, GameState.queenDirections)
+
+    def _get_pawn_moves(self, pos: Position) -> Iterable[PositionPair]:
+        direction = 1 if self.whiteToMove else -1
+        start_rank = 0 + direction if self.whiteToMove else 4 + direction
+        
+        forward_one = Position(pos.x, pos.y + direction)
+        if forward_one.is_valid() and self.board[forward_one] == '.':
+            yield PositionPair(pos, forward_one)
+            forward_two = Position(pos.x, pos.y + 2 * direction)
+            if pos.y == start_rank and self.board[forward_two] == '.':
+                yield PositionPair(pos, forward_two)
+        
+        attack_deltas = [Position(-1, direction), Position(1, direction)]
+        for delta in attack_deltas:
+            attack_pos = pos + delta
+            if attack_pos.is_valid():
+                target_piece = self.board[attack_pos]
+                if target_piece != '.' and not self.piece_is_movers(target_piece):
+                    yield PositionPair(pos, attack_pos)
+                elif attack_pos == self.enPassantTarget:
+                    yield PositionPair(pos, attack_pos)
+
+    def _raytrace_moves(self, pos: Position, moves: List[Position]) -> Iterable[PositionPair]:
+        for delta in moves:
+            current = pos + delta
+            while current.is_valid():
+                target_piece = self.board[current]
+                if target_piece == '.':
+                    yield PositionPair(pos, current)
+                else:
+                    if not self.piece_is_movers(target_piece):
+                        yield PositionPair(pos, current)
+                    break
+                current += delta
+
+    def _apply_deltas(self, move_from: Position, to_deltas: List[Position]) -> Iterable[PositionPair]:
+        for delta in to_deltas:
+            move_to = move_from + delta
+            if move_to.is_valid() and (self.board[move_to] == '.' or not self.piece_is_movers(self.board[move_to])):
+                yield PositionPair(move_from, move_to)
+
+    def _get_pieces_for_current_player(self) -> Iterable[Tuple[str, Position]]:
+        return filter(lambda p: p[0] != '.' and self.piece_is_movers(p[0]), self.get_positions())
+
+    def get_positions(self) -> Iterable[Tuple[str, Position]]:
+        for c in range(5):
+            for r in range(5):
+                yield (self.board[c, r], Position(c, r))
+
+    def print_board(self):
+        self.board.print_board()
+
+
+# =============================================================================
+# Agent.cs
+# =============================================================================
+class Agent:
+    
+    class MemoEntryType(enum.Enum):
+        Exact = 0
+        LowerBound = 1
+        UpperBound = 2
+
+    @dataclass(frozen=True)
+    class MemoEntry:
+        Value: int
+        Depth: int
+        Type: 'Agent.MemoEntryType'
+        Move: ReducedMoveInfo
+        Valid: bool = True
+
+    # A default, invalid MemoEntry
+    MemoEntry.Default = MemoEntry(0, 0, MemoEntryType.Exact, ReducedMoveInfo(Position.Null, Position.Null), False)
+
+    memo: Dict[int, MemoEntry] = {}
+
+    @staticmethod
+    def _piece_to_points(piece: str) -> int:
+        return {
+            'P': 1, 'p': 1,
+            'N': 3, 'n': 3,
+            'B': 3, 'b': 3,
+            'R': 5, 'r': 5,
+            'Q': 9, 'q': 9,
+            'K': 0, 'k': 0,
+        }.get(piece, 0)
+
+    @staticmethod
+    def _heuristic(game: GameState) -> int:
+        heuristic = 0
+        for piece, pos in game.get_positions():
+            is_for = game.piece_is_movers(piece)
+            value = Agent._piece_to_points(piece)
+            heuristic += value if is_for else -value
+        return heuristic
+
+    @staticmethod
+    def _negamax(game: GameState, alpha: int, beta: int, depth: int, move_made: MoveInfo, hash_val: int) -> int:
+        if DrawDetector.is_drawn(hash_val):
+            return 0
+
+        if move_made.IsMating:  # YOU have been mated, negative score, VERY BAD!!!!
+            return -(1000 + depth)  # prefer faster mates
+
+        if depth == 0:
+            return Agent._heuristic(game)
+        
+        memo_entry = Agent.memo.get(hash_val)
+        if memo_entry and memo_entry.Depth >= depth:
+            if memo_entry.Type == Agent.MemoEntryType.Exact:
+                return memo_entry.Value
+            elif memo_entry.Type == Agent.MemoEntryType.LowerBound and memo_entry.Value >= beta:
+                return memo_entry.Value
+            elif memo_entry.Type == Agent.MemoEntryType.UpperBound and memo_entry.Value <= alpha:
+                return memo_entry.Value
+        
+        # Use default if no entry
+        memo_entry = memo_entry or Agent.MemoEntry.Default
+
+
+        if game.is_drawn():
+            return 0
+
+        max_val = -sys.maxsize
+        best_move = MoveInfo.Default
+        initial_alpha = alpha
+        is_first_move = True
+
+        moves = game.get_legal_moves()
+        sorted_moves = sorted(moves, key=lambda m: Agent._key_selector(m, memo_entry), reverse=True)
+
+        for info in sorted_moves:
+            # LMR
+            new_depth = depth - 1
+            if DrawDetector.moves_made() > 8 and not is_first_move and depth >= 3 and info.ToPiece == '.' and not info.IsChecking and not info.IsMating and not info.IsPromotion:
+                new_depth -= 1
+
+            new_hash = GameState.Zobrist.update_hash(hash_val, info)
+
+            game.apply_move(info)
+            DrawDetector.do(new_hash)
+
+            value = 0
+            if is_first_move:  # PVS (Principal Variation Search)
+                value = -Agent._negamax(game, -beta, -alpha, new_depth, info, new_hash)
+                is_first_move = False
+            else:
+                value = -Agent._negamax(game, -(alpha + 1), -alpha, new_depth, info, new_hash)
+                if value > alpha:
+                    value = -Agent._negamax(game, -beta, -alpha, new_depth, info, new_hash)
+
+            DrawDetector.undo(new_hash)
+            game.undo_move(info)
+
+            if value > max_val:
+                max_val = value
+                best_move = info
+            
+            alpha = max(alpha, value)
+            if alpha >= beta or info.IsMating:
+                break
+        
+        memo_type = Agent.MemoEntryType.Exact
+        if max_val <= initial_alpha:
+            memo_type = Agent.MemoEntryType.UpperBound
+        elif max_val >= beta:
+            memo_type = Agent.MemoEntryType.LowerBound
+        
+        Agent.memo[hash_val] = Agent.MemoEntry(max_val, depth, memo_type, best_move.to_reduced_move_info())
+
+        return max_val
+
+    @staticmethod
+    def _key_selector(move_info: MoveInfo, memo_entry: 'Agent.MemoEntry') -> int:
+        # Checkmate > Hash Move > Check > Good Capture > Special Move > Bad Capture > Quiet Move
+        score = 0
+
+        if move_info.IsMating:
+            score += 1_000_000
+
+        if memo_entry.Valid and (move_info.From, move_info.To) == (memo_entry.Move.From, memo_entry.Move.To):
+            score += 500_000
+        elif move_info.IsChecking:
+            score += 100_000
+
+        victim_piece = move_info.ToPiece if move_info.ToPiece != '.' else move_info.EPPiece
+        if victim_piece != '.':
+            victim = Agent._piece_to_points(victim_piece)
+            aggressor = Agent._piece_to_points(move_info.FromPiece)
+            score += 10 * victim - aggressor
+            
+            if victim > aggressor:  # Good capture
+                score += 10_000
+            else:                   # Bad capture
+                score += 100
+
+        if move_info.IsPromotion:
+            score += 5000
+
+        return score
+
+    @staticmethod
+    def find_best_move(game: GameState) -> Tuple[MoveInfo, int]:
+        depth = 6  # C# const int depth = 11
+
+        # memo = {} # C# memo = []
+
+        moves = sorted(game.get_legal_moves(), key=lambda m: Agent._key_selector(m, Agent.MemoEntry.Default), reverse=True)
+
+        best_move = moves[0]
+        max_val = -1_000_000_000 #-sys.maxsize
+        alpha = -1_000_000_000 #-sys.maxsize
+        beta = 1_000_000_000 #sys.maxsize
+        hash_val = GameState.Zobrist.compute_hash(game)
+
+        DrawDetector.do(hash_val)  # do opponents move
+
+        for info in moves:
+            new_hash = GameState.Zobrist.update_hash(hash_val, info)
+            game.apply_move(info)
+            DrawDetector.do(new_hash)
+            
+            value = -Agent._negamax(game, -beta, -alpha, depth - 1, info, new_hash)
+            
+            DrawDetector.undo(new_hash)
+            game.undo_move(info)
+
+            if value > max_val:
+                best_move = info
+                max_val = value
+
+            alpha = max(alpha, value)
+
+            if alpha >= beta or info.IsMating:
+                break
+        
+        DrawDetector.do(GameState.Zobrist.update_hash(hash_val, best_move))  # do best move
+
+        return best_move, max_val
+
+
+# =============================================================================
+# Program.cs
+# =============================================================================
+def test_agent_game(game: GameState):
+    game.print_board()
+    print("======")
+
+    while True:
+        player = "White" if game.piece_is_movers('K') else "Black"
+        if game.is_drawn():
+            print("Draw by 2 kings remaining")
+            break
+        if DrawDetector.check_for_draw():
+            print("Draw by repetition")
+            break
+        if game.current_player_is_mated():
+            print(f"{player} is mated")
             break
 
-        if time_exceeded:
+        move, value = Agent.find_best_move(game)
+
+        game.apply_move(move)
+        
+        check_str = ""
+        if move.IsChecking:
+            check_str = "#" if move.IsMating else "+"
+        elif move.IsMating:
+            check_str = "§" # C# code had this, preserving
+            
+        print(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){check_str} with eval {value}")
+        game.print_board()
+        print("======")
+
+if __name__ == "__main__":
+    g2 = GameState(
+        """
+. Q . . .
+. . . . k
+. . R . .
+. P . . .
+. . . K N
+""", 
+        whiteToMove=False
+    )  # mate in 2
+
+    g3 = GameState(
+        """
+. . . . k
+. Q . . .
+. . R . .
+. P . . .
+. . . K N
+"""
+    )  # mate in 1
+
+    # test_agent_game(g2)
+
+    start_time = time.perf_counter()
+    test_agent_game(GameState())
+    end_time = time.perf_counter()
+    
+    ts = end_time - start_time
+    minutes = int(ts // 60)
+    seconds = ts % 60
+    
+    print(f"Time taken: {minutes:02}:{seconds:05.2f}")
+
+
+### == Here marks the end of the translated C# agent == ###
+### == Celebrate for the beffudlement has come to an end == ###
+### == Below is conversion from chessmaker types to our agent types == ###
+
+
+state: GameState = GameState()  # Global game state for the agent
+
+
+def piece_to_symbol(piece: CM_Piece | None) -> str:
+    if piece is None:
+        return '.'
+
+    name: str = piece.name # type: ignore[attr-defined]
+    player: str = piece.player.name  # type: ignore[attr-defined]
+
+    if name == 'Knight':
+        symbol = 'N'
+    else:
+        symbol = name[0]
+
+    return symbol if player == "white" else symbol.lower()
+
+
+def find_en_passant_target(board: CM_Board, piece: CM_Piece) -> CM_Position | None:
+    if piece is None or piece.name != 'Pawn' or piece.player == board.current_player:
+        return None
+    
+    pawn = piece # pawn: Pawn = piece
+    two_squares_behind = pawn.position.offset(0, -2 * pawn._direction.value)
+    one_square_behind = pawn.position.offset(0, -1 * pawn._direction.value)
+
+    if (pawn._last_position == two_squares_behind and 0 <= pawn._moved_turns_ago <= 1):
+        return one_square_behind
+
+
+def equal_position(cm_pos: CM_Position, cs_pos: Position) -> bool:
+    return cs_pos == to_cs_position(cm_pos)
+
+def to_cs_position(cm_pos: CM_Position) -> Position:
+    return Position(cm_pos.x, 4 - cm_pos.y)
+
+def find_move_on_cm_board(board: CM_Board, move: MoveInfo) -> CM_Move:
+    piece: CM_Piece | None = None
+    for p in board.get_player_pieces(board.current_player):
+        if equal_position(p.position, move.From):
+            piece = p
             break
 
-    memo[board_hash] = (best_value, best_move, depth)
-    return best_value, best_move, time_exceeded
+    move_opt: CM_MoveOption | None = None
+    for m in piece.get_move_options():
+        to: CM_Position = m.position
+        if equal_position(to, move.To):
+            move_opt = m
+            break
+
+    assert piece is not None, "Piece not found on CM board"
+    assert move_opt is not None, "Move option not found on CM board"
+
+    return piece, move_opt
 
 
-def agent(board: Board, player: Player, var: list[int]) -> Move:
+def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     """
     This is an example of your designed Agent
 
@@ -419,45 +822,47 @@ def agent(board: Board, player: Player, var: list[int]) -> Move:
     - Use the timeout variable together with time.perf_counter()
     to ensure the agent returns its best move before the time limit expires.
     """
+    global state
+    cm_board: CM_Board = board
+    cm_player: CM_Player = player
+    ply_id: int = var[0]
+    timeout: float = var[1]
 
-    start_time = time.perf_counter()
-    time_limit = var[1] - 0.1  # Leave a small buffer
+    # Rip out the state from private attributes and methods from chessmaker
+    # into our GameState
+    epTarget: CM_Position | None = None
+    for row in cm_board._squares:                                      # type: ignore[attr-defined]
+        for square in row:
+            if square is None:
+                raise ValueError("Square is None")
+            piece: CM_Piece | None = square.piece                      # type: ignore[attr-defined]
+            position: CM_Position = square.position                       # type: ignore[attr-defined]
+            symbol = piece_to_symbol(piece)
+            state.board[to_cs_position(position)] = symbol
+            
+            
+            # a very lazy approach at setting en passant target
+            # if epTarget is None and piece is not None and piece.name == 'Pawn':   # type: ignore[attr-defined]
+            #     for move_option in piece._get_move_options():                     # type: ignore[attr-defined]
+            #         if 'en_passant' in move_option.extra:                         # type: ignore[attr-defined]
+            #             epTarget = move_option.position
+            #             break
 
-    global memo
-    memo = {}
-    take_notes(f"Ply: {var[0]}\ntime limit: {var[1]}\nmemo size: {len(memo)}\n")
+            # more efficient approach
+            if epTarget is None:
+                epTarget = find_en_passant_target(cm_board, piece)
 
-    starting_depth = 4
+    state.enPassantTarget = Position(epTarget.x, epTarget.y) if epTarget is not None else Position.Null
+    state.whiteToMove = (cm_player.name == "white")
 
-    # Iterative deepening: progressively increase search depth while time remains.
-    best_move = None
-    best_value = float('-inf')
-    depth = starting_depth
-    board_hash = compute_hash(board, zobrist_table, zobrist_black_to_move)
-    update_repetition_count(board_hash)
+    move, value = Agent.find_best_move(state)
 
-    while True:
-        #new_board = clone_board(board)  # type: ignore[attr-defined]
-        new_board = board
-        value, move, time_exceeded = negamax(new_board, depth, float('-inf'), float('inf'), start_time, time_limit, board_hash)
+    check_str = ""
+    if move.IsChecking:
+        check_str = "#" if move.IsMating else "+"
+    elif move.IsMating:
+        check_str = "§" # C# code had this, preserving
+        
+    print(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){check_str} with eval {value}")
 
-        if time_exceeded:
-            if value > best_value:
-                best_move = move
-                best_value = value
-            break
-
-        best_move = move
-        best_value = value
-        # print_once(f"Completed depth {depth} (value = {best_value}, time = {time.perf_counter() - start_time:.6f}) ")
-        depth += 1
-        break # ================================================== REMOVE AFTER TESTING =============================================
-
-    print_once("")
-
-    if best_move is None:
-        raise Exception("No valid moves found by agent")
-    
-    print(f"Selected move with evaluation value: {best_value}")
-
-    return best_move
+    return find_move_on_cm_board(cm_board, move)
