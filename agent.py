@@ -375,11 +375,6 @@ class GameState:
         if is_legal:
             is_check = self._opponent_is_in_check()
 
-            self.whiteToMove = not self.whiteToMove
-            is_mate = not limit_depth and self.current_player_is_mated()
-            self.whiteToMove = not self.whiteToMove
-        # else: early exit, no need to check for check/mate
-        
         # finally switch sides for next move
         self.whiteToMove = not self.whiteToMove
 
@@ -603,8 +598,8 @@ class Agent:
         if DrawDetector.is_drawn(hash_val):
             return 0
 
-        if move_made.IsMating:  # YOU have been mated, negative score, VERY BAD!!!!
-            return -(1000 + depth)  # prefer faster mates
+        # if move_made.IsMating:  # YOU have been mated, negative score, VERY BAD!!!!
+        #     return -(1000 + depth)  # prefer faster mates
 
         if depth == 0:
             return Agent._heuristic(game)
@@ -666,6 +661,9 @@ class Agent:
             if alpha >= beta or info.IsMating:
                 break
         
+        if best_move == MoveInfo.Default:
+            return -(1000 + depth) # no legal moves, you have been mated
+
         memo_type = Agent.MemoEntryType.Exact
         if max_val <= initial_alpha:
             memo_type = Agent.MemoEntryType.UpperBound
