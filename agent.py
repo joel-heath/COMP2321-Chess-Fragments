@@ -306,27 +306,38 @@ class GameState:
     enPassantTarget: Position
     board: Board
     whiteToMove: bool
+    whiteKing: Position
+    blackKing: Position
 
     def __init__(self, setup: Optional[str] = None, whiteToMove: bool = True):
         self.whiteToMove = whiteToMove
         self.board = Board(setup)
         self.enPassantTarget = Position.Null
-        # Initialize Zobrist table if not already done
+
         if not GameState.Zobrist.zobrist_table:
             GameState.Zobrist._initialize()
+
+        for piece, position in self.get_positions():
+            if piece == 'K':
+                self.whiteKing = position
+            elif piece == 'k':
+                self.blackKing = position
 
     def piece_is_movers(self, piece: str) -> bool:
         return piece.isupper() == self.whiteToMove
 
     def _opponent_is_in_check(self) -> bool:
-        opponent_king = 'k' if self.whiteToMove else 'K'
-        return any(self.board[move.To] == opponent_king for move in self.get_moves())
-
+        opponent_king = self.blackKing if self.whiteToMove else self.whiteKing
+        return self._square_is_attacked(opponent_king, self.whiteToMove)
+    
+    def current_player_is_in_check(self) -> bool:
+        current_king = self.whiteKing if self.whiteToMove else self.blackKing
+        return self._square_is_attacked(current_king, not self.whiteToMove)
+    
     def current_player_is_mated(self) -> bool:
         return not any(self.get_legal_moves(limit_depth=True))
 
-    def is_drawn(self) -> bool:
-        # Draw if only two kings remain
+    def is_drawn_by_only_kings(self) -> bool:
         return all(p == '.' or p == 'K' or p == 'k' for p, pos in self.get_positions())
 
     def _move(self, move_from: Position, move_to: Position, limit_depth: bool = False) -> MoveInfo:
@@ -351,22 +362,26 @@ class GameState:
         self.board[move_to] = 'Q' if is_promotion and self.whiteToMove else 'q' if is_promotion else from_piece
         self.board[move_from] = '.'
 
-        # check legality first: switch sides then check if we're in check
-        self.whiteToMove = not self.whiteToMove
-        is_legal = not self._opponent_is_in_check()
+        if from_piece == 'K':
+            self.whiteKing = move_to
+        elif from_piece == 'k':
+            self.blackKing = move_to
+
+        # check legality first
+        is_legal = not self.current_player_is_in_check()
         is_check = False
         is_mate = False
 
         if is_legal:
-            # switch back to our side, move is check if opponent is in check
-            self.whiteToMove = not self.whiteToMove
             is_check = self._opponent_is_in_check()
 
-            # finally switch sides for next move
             self.whiteToMove = not self.whiteToMove
             is_mate = not limit_depth and self.current_player_is_mated()
-        
+            self.whiteToMove = not self.whiteToMove
         # else: early exit, no need to check for check/mate
+        
+        # finally switch sides for next move
+        self.whiteToMove = not self.whiteToMove
 
         return MoveInfo(
             From=move_from,
@@ -388,6 +403,10 @@ class GameState:
         self.board[info.From] = '.'
         if info.EP.is_valid():
             self.board[info.EP] = '.'
+        if info.FromPiece == 'K':
+            self.whiteKing = info.To
+        elif info.FromPiece == 'k':
+            self.blackKing = info.To
 
         self.whiteToMove = not self.whiteToMove
         self.enPassantTarget = info.NewEnPassantTarget
@@ -399,6 +418,11 @@ class GameState:
         if info.EP.is_valid():
             self.board[info.EP] = info.EPPiece
             # self.board[info.To] = '.' # This was commented out in C#, so kept here.
+
+        if info.FromPiece == 'K':
+            self.whiteKing = info.From
+        elif info.FromPiece == 'k':
+            self.blackKing = info.From
 
         self.whiteToMove = not self.whiteToMove
         self.enPassantTarget = info.PreviousEnPassantTarget
@@ -426,6 +450,58 @@ class GameState:
                 yield from self._raytrace_moves(pos, GameState.queenDirections)
             elif piece == 'K' or piece == 'k':
                 yield from self._apply_deltas(pos, GameState.queenDirections)
+
+    def _raytrace_attackers(self, pos: Position, piece1: str, piece2: str, vectors: Iterable[Position]) -> bool:
+        for delta in vectors:
+            current = pos + delta
+            while current.is_valid():
+                target_piece = self.board[current]
+                if target_piece == '.':
+                    current += delta
+                    continue
+                elif target_piece == piece1 or target_piece == piece2:
+                    return True
+                else:
+                    break
+        return False
+    
+    def _square_is_attacked(self, pos: Position, by_white: bool) -> bool:
+        pawn_piece = 'P' if by_white else 'p'
+        knight_piece = 'N' if by_white else 'n'
+        bishop_piece = 'B' if by_white else 'b'
+        right_piece = 'R' if by_white else 'r'
+        queen_piece = 'Q' if by_white else 'q'
+        king_piece = 'K' if by_white else 'k'
+
+        # Check knight attacks (and funny rook knight)
+        for delta in GameState.knightMoves:
+            attacker_pos = pos + delta
+            if attacker_pos.is_valid() and (self.board[attacker_pos] == knight_piece or self.board[attacker_pos] == right_piece):
+                return True
+
+        # Check bishop attacks
+        if self._raytrace_attackers(pos, bishop_piece, queen_piece, GameState.bishopDirections):
+            return True
+
+        # Check rook attacks
+        if self._raytrace_attackers(pos, right_piece, queen_piece, GameState.rookDirections):
+            return True
+
+        # Check pawn attacks
+        pawn_direction = 1 if by_white else -1
+        attack_deltas = [Position(-1, -pawn_direction), Position(1, -pawn_direction)]
+        for delta in attack_deltas:
+            attacker_pos = pos + delta
+            if attacker_pos.is_valid() and self.board[attacker_pos] == pawn_piece:
+                return True
+
+        # Check king attacks
+        for delta in GameState.queenDirections:
+            attacker_pos = pos + delta
+            if attacker_pos.is_valid() and self.board[attacker_pos] == king_piece:
+                return True
+
+        return False
 
     def _get_pawn_moves(self, pos: Position) -> Iterable[PositionPair]:
         direction = 1 if self.whiteToMove else -1
@@ -546,7 +622,7 @@ class Agent:
         memo_entry = memo_entry or Agent.MemoEntry.Default
 
 
-        if game.is_drawn():
+        if game.is_drawn_by_only_kings():
             return 0
 
         max_val = -sys.maxsize
@@ -575,6 +651,8 @@ class Agent:
             else:
                 value = -Agent._negamax(game, -(alpha + 1), -alpha, new_depth, info, new_hash)
                 if value > alpha:
+                    # promote to PV
+                    new_depth = depth - 1
                     value = -Agent._negamax(game, -beta, -alpha, new_depth, info, new_hash)
 
             DrawDetector.undo(new_hash)
@@ -629,7 +707,7 @@ class Agent:
 
     @staticmethod
     def find_best_move(game: GameState) -> Tuple[MoveInfo, int]:
-        depth = 6  # C# const int depth = 11
+        depth = 5  # C# const int depth = 11
 
         # memo = {} # C# memo = []
 
@@ -676,7 +754,7 @@ def test_agent_game(game: GameState):
 
     while True:
         player = "White" if game.piece_is_movers('K') else "Black"
-        if game.is_drawn():
+        if game.is_drawn_by_only_kings():
             print("Draw by 2 kings remaining")
             break
         if DrawDetector.check_for_draw():
@@ -747,8 +825,8 @@ def piece_to_symbol(piece: CM_Piece | None) -> str:
     if piece is None:
         return '.'
 
-    name: str = piece.name # type: ignore[attr-defined]
-    player: str = piece.player.name  # type: ignore[attr-defined]
+    name: str = piece.name
+    player: str = piece.player.name
 
     if name == 'Knight':
         symbol = 'N'
@@ -773,8 +851,10 @@ def find_en_passant_target(board: CM_Board, piece: CM_Piece) -> CM_Position | No
 def equal_position(cm_pos: CM_Position, cs_pos: Position) -> bool:
     return cs_pos == to_cs_position(cm_pos)
 
+
 def to_cs_position(cm_pos: CM_Position) -> Position:
     return Position(cm_pos.x, 4 - cm_pos.y)
+
 
 def find_move_on_cm_board(board: CM_Board, move: MoveInfo) -> CM_Move:
     piece: CM_Piece | None = None
@@ -831,24 +911,15 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     # Rip out the state from private attributes and methods from chessmaker
     # into our GameState
     epTarget: CM_Position | None = None
-    for row in cm_board._squares:                                      # type: ignore[attr-defined]
+    for row in cm_board._squares:
         for square in row:
             if square is None:
                 raise ValueError("Square is None")
-            piece: CM_Piece | None = square.piece                      # type: ignore[attr-defined]
-            position: CM_Position = square.position                       # type: ignore[attr-defined]
+            piece: CM_Piece | None = square.piece
+            position: CM_Position = square.position
             symbol = piece_to_symbol(piece)
             state.board[to_cs_position(position)] = symbol
-            
-            
-            # a very lazy approach at setting en passant target
-            # if epTarget is None and piece is not None and piece.name == 'Pawn':   # type: ignore[attr-defined]
-            #     for move_option in piece._get_move_options():                     # type: ignore[attr-defined]
-            #         if 'en_passant' in move_option.extra:                         # type: ignore[attr-defined]
-            #             epTarget = move_option.position
-            #             break
 
-            # more efficient approach
             if epTarget is None:
                 epTarget = find_en_passant_target(cm_board, piece)
 
@@ -861,7 +932,7 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     if move.IsChecking:
         check_str = "#" if move.IsMating else "+"
     elif move.IsMating:
-        check_str = "§" # C# code had this, preserving
+        check_str = "§"
         
     print(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){check_str} with eval {value}")
 
