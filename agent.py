@@ -578,10 +578,81 @@ class GameState:
 
 
 # =============================================================================
+# MoveGenerator.cs (doesnt exist lol)
+# =============================================================================
+
+class MoveGenerator:
+    @staticmethod
+    def generate_moves(game: GameState, memo_entry: 'Agent.MemoEntry') -> Iterable[PositionPair]:
+        # Instead of running _move to find if moves are legal, we will just order by captures.
+        # Pros: Much faster move generation, no checking for legality or if checks, meaning more time saved through alpha-beta pruning.
+        # Cons: Less accurate move ordering, meaning less time saved through alpha-beta pruning.
+
+        # Hash Move > Check > Good Capture > Special Move > Bad Capture > Quiet Move
+
+        if memo_entry.Valid:
+            yield memo_entry.Move
+
+        # How to check for checking moves FAST?
+        # after move see if moved piece now attacks opponent king
+        # Check discovered checks:
+        # we check the horizontal, vertical, diagonal lines from empty position the piece moved from
+        # if king lies on none, no discovered check
+        # if it does, iterate along to see if there is an attacker, emptiness, and king only
+
+        good_captures = []
+        bad_captures = []
+        specials = []
+        quiets = []
+
+        for move in game._get_moves():
+            if memo_entry.Valid and (move.From, move.To) == (memo_entry.Move.From, memo_entry.Move.To):
+                continue  # already yielded
+
+            from_piece = game.board[move.From]
+            to_piece = game.board[move.To]
+            if to_piece != '.':
+
+                victim = Agent._piece_to_points(to_piece)
+                aggressor = Agent._piece_to_points(from_piece)
+
+                score = 10 * victim - aggressor
+                
+                if aggressor == 1 and (move.To.y == 0 or move.To.y == 4):
+                    score += 5000
+
+                if victim > aggressor:
+                    good_captures.append((score, move))
+                else:
+                    bad_captures.append((score, move))
+            else:
+                if ((from_piece == 'P' or from_piece == 'p' or from_piece == 'T' or from_piece == 't') and (move.To.y == 0 or move.To.y == 4)):
+                    specials.append(move)
+                else:
+                    quiets.append(move)
+            
+        good_captures.sort(reverse=True)
+        for _, move in good_captures:
+            yield move
+        
+        for move in specials:
+            yield move
+        
+        bad_captures.sort(reverse=True)
+        for _, move in bad_captures:
+            yield move
+        
+        for move in quiets:
+            yield move
+    
+
+    
+    
+
+# =============================================================================
 # Agent.cs
 # =============================================================================
 class Agent:
-    
     class MemoEntryType(enum.Enum):
         Exact = 0
         LowerBound = 1
@@ -598,7 +669,7 @@ class Agent:
     # A default, invalid MemoEntry
     MemoEntry.Default = MemoEntry(0, 0, MemoEntryType.Exact, ReducedMoveInfo(Position.Null, Position.Null), False)
 
-    memo: Dict[int, MemoEntry] = {}
+    memo = [None] * (1 << 24)
 
     @staticmethod
     def _piece_to_points(piece: str) -> int:
@@ -629,7 +700,8 @@ class Agent:
         if depth == 0:
             return Agent._heuristic(game)
         
-        memo_entry = Agent.memo.get(hash_val, Agent.MemoEntry.Default)
+        index = hash_val & ((1 << 24) - 1)
+        memo_entry = Agent.memo[index]
         if memo_entry and memo_entry.Depth >= depth:
             if memo_entry.Type == Agent.MemoEntryType.Exact:
                 return memo_entry.Value
@@ -648,18 +720,20 @@ class Agent:
         initial_alpha = alpha
         is_first_move = True
 
-        moves = game.get_legal_moves()
-        sorted_moves = sorted(moves, key=lambda m: Agent._key_selector(m, memo_entry), reverse=True)
+        moves = MoveGenerator.generate_moves(game, memo_entry if memo_entry else Agent.MemoEntry.Default)
 
-        for info in sorted_moves:
+        for poistion_pair in moves:
+            info = game._move(poistion_pair.From, poistion_pair.To)
+            if not info.IsLegal:
+                game.undo_move(info)
+                continue
+
             # LMR
             new_depth = depth - 1
             if DrawDetector.moves_made() > 8 and not is_first_move and depth >= 3 and info.ToPiece == '.' and not info.IsChecking and not info.IsPromotion:
                 new_depth -= 1
 
             new_hash = GameState.Zobrist.update_hash(hash_val, info)
-
-            game.apply_move(info)
             DrawDetector.do(new_hash)
 
             value = 0
@@ -693,7 +767,7 @@ class Agent:
         elif max_val >= beta:
             memo_type = Agent.MemoEntryType.LowerBound
         
-        Agent.memo[hash_val] = Agent.MemoEntry(max_val, depth, memo_type, best_move.to_reduced_move_info())
+        Agent.memo[index] = Agent.MemoEntry(max_val, depth, memo_type, best_move.to_reduced_move_info())
 
         return max_val
 
@@ -925,7 +999,7 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     ply_id: int = var[0]
     timeout: float = var[1]
     
-    depth = 6
+    depth = 8
 
     # Rip out the state from private attributes and methods from chessmaker
     # into our GameState
