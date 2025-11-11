@@ -92,10 +92,10 @@ class MoveInfo:
     FromPiece: str
     To: Position
     ToPiece: str
+    PromotionPiece: str  # What FromPiece becomes after move, unchanged except for pawn promotion to queen or double jumping pawn to normal pawn
     EP: Position  # The piece position captured by en passant
     EPPiece: str  # The piece captured by en passant
     IsChecking: bool
-    IsMating: bool
     IsPromotion: bool
     IsLegal: bool
     PreviousEnPassantTarget: Position
@@ -112,8 +112,8 @@ MoveInfo.Default = MoveInfo(
     ToPiece='.',
     EP=Position.Null,
     EPPiece='.',
+    PromotionPiece='.',
     IsChecking=False,
-    IsMating=False,
     IsPromotion=False,
     IsLegal=False,
     PreviousEnPassantTarget=Position.Null,
@@ -225,7 +225,7 @@ class GameState:
         @staticmethod
         def _initialize():
             GameState.Zobrist.black_to_move = GameState.Zobrist._random_ulong()
-            GameState.Zobrist.zobrist_table = [[[GameState.Zobrist._random_ulong() for _ in range(13)] for _ in range(5)] for _ in range(5)]
+            GameState.Zobrist.zobrist_table = [[[GameState.Zobrist._random_ulong() for _ in range(15)] for _ in range(5)] for _ in range(5)]
         
         @staticmethod
         def compute_hash(game: 'GameState') -> int:
@@ -251,6 +251,7 @@ class GameState:
             from_index = GameState.Zobrist.index_of(move.FromPiece)
             to_index = GameState.Zobrist.index_of(move.ToPiece)
             ep_index = GameState.Zobrist.index_of(move.EPPiece)
+            promo_index = GameState.Zobrist.index_of(move.PromotionPiece)
 
             # XOR out the piece from its old square
             current ^= GameState.Zobrist.zobrist_table[move.From.x][move.From.y][from_index]
@@ -264,13 +265,7 @@ class GameState:
                 current ^= GameState.Zobrist.zobrist_table[move.EP.x][move.EP.y][ep_index]
 
             # XOR in the piece at its new square
-            # Handle promotion
-            if move.IsPromotion:
-                promoted_piece_index = GameState.Zobrist.index_of('Q' if move.FromPiece.isupper() else 'q')
-                current ^= GameState.Zobrist.zobrist_table[move.To.x][move.To.y][promoted_piece_index]
-            else:
-                current ^= GameState.Zobrist.zobrist_table[move.To.x][move.To.y][from_index]
-
+            current ^= GameState.Zobrist.zobrist_table[move.To.x][move.To.y][promo_index]
 
             # STATE CHANGES
 
@@ -279,21 +274,47 @@ class GameState:
 
             # XOR out the old en passant square (if any)
             if move.PreviousEnPassantTarget.is_valid():
-                current ^= GameState.Zobrist.zobrist_table[move.PreviousEnPassantTarget.x][move.PreviousEnPassantTarget.y][12]
+                current ^= GameState.Zobrist.zobrist_table[move.PreviousEnPassantTarget.x][move.PreviousEnPassantTarget.y][14]
 
             # XOR in the new en passant square (if any)
             if move.NewEnPassantTarget.is_valid():
-                current ^= GameState.Zobrist.zobrist_table[move.NewEnPassantTarget.x][move.NewEnPassantTarget.y][12]
+                current ^= GameState.Zobrist.zobrist_table[move.NewEnPassantTarget.x][move.NewEnPassantTarget.y][14]
 
             return current
 
         @staticmethod
         def index_of(piece: str) -> int:
-            return {
-                'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5,
-                'p': 6, 'n': 7, 'b': 8, 'r': 9, 'q': 10, 'k': 11,
-                '*': 12, # en passant marker
-            }.get(piece, -1)
+            if piece == 'T': # pawn that can move two squares
+                return 0
+            if piece == 'P':
+                return 1
+            if piece == 'N':
+                return 2
+            if piece == 'B':
+                return 3
+            if piece == 'R':
+                return 4
+            if piece == 'Q':
+                return 5
+            if piece == 'K':
+                return 6
+            if piece == 't':
+                return 7
+            if piece == 'p':
+                return 8
+            if piece == 'n':
+                return 9
+            if piece == 'b':
+                return 10
+            if piece == 'r':
+                return 11
+            if piece == 'q':
+                return 12
+            if piece == 'k':
+                return 13
+            if piece == '*':
+                return 14  # en passant marker
+            return -1
 
     # --- End of Zobrist ---
 
@@ -330,7 +351,7 @@ class GameState:
         opponent_king = self.blackKing if self.whiteToMove else self.whiteKing
         return self._square_is_attacked(opponent_king, self.whiteToMove)
     
-    def current_player_is_in_check(self) -> bool:
+    def _current_player_is_in_check(self) -> bool:
         current_king = self.whiteKing if self.whiteToMove else self.blackKing
         return self._square_is_attacked(current_king, not self.whiteToMove)
     
@@ -344,22 +365,27 @@ class GameState:
         from_piece = self.board[move_from]
         to_piece = self.board[move_to]
         ep_piece = '.'
+        promotion_piece = from_piece
         en_passant_taken = Position.Null
         previous_en_passant_target = self.enPassantTarget
         self.enPassantTarget = Position.Null
 
         is_promotion = False
-        if from_piece == 'P' or from_piece == 'p':
+        if from_piece == 'P' or from_piece == 'p' or from_piece == 'T' or from_piece == 't':
             if move_to.y == 0 or move_to.y == 4:
                 is_promotion = True
-            elif (move_from.y == 1 and move_to.y == 3) or (move_from.y == 3 and move_to.y == 1):
+                promotion_piece = 'Q' if self.whiteToMove else 'q'
+            elif abs(move_to.y - move_from.y) == 2:
                 self.enPassantTarget = Position(move_from.x, (move_from.y + move_to.y) // 2)
             elif move_to == previous_en_passant_target:
                 en_passant_taken = Position(previous_en_passant_target.x, previous_en_passant_target.y + (-1 if self.whiteToMove else 1))
                 ep_piece = self.board[en_passant_taken]
                 self.board[en_passant_taken] = '.'
 
-        self.board[move_to] = 'Q' if is_promotion and self.whiteToMove else 'q' if is_promotion else from_piece
+        if from_piece == 'T' or from_piece == 't':
+            promotion_piece = 'P' if self.whiteToMove else 'p'
+    
+        self.board[move_to] = promotion_piece
         self.board[move_from] = '.'
 
         if from_piece == 'K':
@@ -368,9 +394,8 @@ class GameState:
             self.blackKing = move_to
 
         # check legality first
-        is_legal = not self.current_player_is_in_check()
+        is_legal = not self._current_player_is_in_check()
         is_check = False
-        is_mate = False
 
         if is_legal:
             is_check = self._opponent_is_in_check()
@@ -385,8 +410,8 @@ class GameState:
             ToPiece=to_piece,
             EP=en_passant_taken,
             EPPiece=ep_piece,
+            PromotionPiece=promotion_piece,
             IsChecking=is_check,
-            IsMating=is_mate,
             IsPromotion=is_promotion,
             IsLegal=is_legal,
             PreviousEnPassantTarget=previous_en_passant_target,
@@ -394,7 +419,7 @@ class GameState:
         )
 
     def apply_move(self, info: MoveInfo):
-        self.board[info.To] = ('Q' if self.whiteToMove else 'q') if info.IsPromotion else info.FromPiece
+        self.board[info.To] = info.PromotionPiece
         self.board[info.From] = '.'
         if info.EP.is_valid():
             self.board[info.EP] = '.'
@@ -423,17 +448,19 @@ class GameState:
         self.enPassantTarget = info.PreviousEnPassantTarget
 
     def get_legal_moves(self, limit_depth: bool = False) -> Iterable[MoveInfo]:
-        for move in self.get_moves():
+        for move in self._get_moves():
             move_info = self._move(move.From, move.To, limit_depth)
             self.undo_move(move_info)  # _move modifies state, so we undo
             if move_info.IsLegal:
                 yield move_info
 
-    def get_moves(self) -> Iterable[PositionPair]:
+    def _get_moves(self) -> Iterable[PositionPair]:
         pieces = self._get_pieces_for_current_player()
         for piece, pos in pieces:
             if piece == 'P' or piece == 'p':
-                yield from self._get_pawn_moves(pos)
+                yield from self._get_pawn_moves(pos, False)
+            elif piece == 'T' or piece == 't':
+                yield from self._get_pawn_moves(pos, True)
             elif piece == 'N' or piece == 'n':
                 yield from self._apply_deltas(pos, GameState.knightMoves)
             elif piece == 'R' or piece == 'r':
@@ -461,6 +488,7 @@ class GameState:
         return False
     
     def _square_is_attacked(self, pos: Position, by_white: bool) -> bool:
+        two_piece = 'T' if by_white else 't'
         pawn_piece = 'P' if by_white else 'p'
         knight_piece = 'N' if by_white else 'n'
         bishop_piece = 'B' if by_white else 'b'
@@ -487,7 +515,7 @@ class GameState:
         attack_deltas = [Position(-1, -pawn_direction), Position(1, -pawn_direction)]
         for delta in attack_deltas:
             attacker_pos = pos + delta
-            if attacker_pos.is_valid() and self.board[attacker_pos] == pawn_piece:
+            if attacker_pos.is_valid() and (self.board[attacker_pos] == pawn_piece or self.board[attacker_pos] == two_piece):
                 return True
 
         # Check king attacks
@@ -498,15 +526,14 @@ class GameState:
 
         return False
 
-    def _get_pawn_moves(self, pos: Position) -> Iterable[PositionPair]:
+    def _get_pawn_moves(self, pos: Position, can_move_two: bool = False) -> Iterable[PositionPair]:
         direction = 1 if self.whiteToMove else -1
-        start_rank = 0 + direction if self.whiteToMove else 4 + direction
         
         forward_one = Position(pos.x, pos.y + direction)
         if forward_one.is_valid() and self.board[forward_one] == '.':
             yield PositionPair(pos, forward_one)
             forward_two = Position(pos.x, pos.y + 2 * direction)
-            if pos.y == start_rank and self.board[forward_two] == '.':
+            if can_move_two and forward_two.is_valid() and self.board[forward_two] == '.':
                 yield PositionPair(pos, forward_two)
         
         attack_deltas = [Position(-1, direction), Position(1, direction)]
@@ -577,6 +604,7 @@ class Agent:
     def _piece_to_points(piece: str) -> int:
         return {
             'P': 1, 'p': 1,
+            'T': 1, 't': 1,
             'N': 3, 'n': 3,
             'B': 3, 'b': 3,
             'R': 5, 'r': 5,
@@ -598,29 +626,24 @@ class Agent:
         if DrawDetector.is_drawn(hash_val):
             return 0
 
-        # if move_made.IsMating:  # YOU have been mated, negative score, VERY BAD!!!!
-        #     return -(1000 + depth)  # prefer faster mates
-
         if depth == 0:
             return Agent._heuristic(game)
         
-        memo_entry = Agent.memo.get(hash_val)
+        memo_entry = Agent.memo.get(hash_val, Agent.MemoEntry.Default)
         if memo_entry and memo_entry.Depth >= depth:
             if memo_entry.Type == Agent.MemoEntryType.Exact:
                 return memo_entry.Value
-            elif memo_entry.Type == Agent.MemoEntryType.LowerBound and memo_entry.Value >= beta:
+            elif memo_entry.Type == Agent.MemoEntryType.LowerBound:
+                alpha = max(alpha, memo_entry.Value)
+            elif memo_entry.Type == Agent.MemoEntryType.UpperBound:
+                beta = min(beta, memo_entry.Value)
+            if alpha >= beta:
                 return memo_entry.Value
-            elif memo_entry.Type == Agent.MemoEntryType.UpperBound and memo_entry.Value <= alpha:
-                return memo_entry.Value
-        
-        # Use default if no entry
-        memo_entry = memo_entry or Agent.MemoEntry.Default
-
 
         if game.is_drawn_by_only_kings():
             return 0
 
-        max_val = -sys.maxsize
+        max_val = -1_000_000_000 #-sys.maxsize
         best_move = MoveInfo.Default
         initial_alpha = alpha
         is_first_move = True
@@ -631,7 +654,7 @@ class Agent:
         for info in sorted_moves:
             # LMR
             new_depth = depth - 1
-            if DrawDetector.moves_made() > 8 and not is_first_move and depth >= 3 and info.ToPiece == '.' and not info.IsChecking and not info.IsMating and not info.IsPromotion:
+            if DrawDetector.moves_made() > 8 and not is_first_move and depth >= 3 and info.ToPiece == '.' and not info.IsChecking and not info.IsPromotion:
                 new_depth -= 1
 
             new_hash = GameState.Zobrist.update_hash(hash_val, info)
@@ -658,7 +681,7 @@ class Agent:
                 best_move = info
             
             alpha = max(alpha, value)
-            if alpha >= beta or info.IsMating:
+            if alpha >= beta:
                 break
         
         if best_move == MoveInfo.Default:
@@ -676,11 +699,8 @@ class Agent:
 
     @staticmethod
     def _key_selector(move_info: MoveInfo, memo_entry: 'Agent.MemoEntry') -> int:
-        # Checkmate > Hash Move > Check > Good Capture > Special Move > Bad Capture > Quiet Move
+        # Hash Move > Check > Good Capture > Special Move > Bad Capture > Quiet Move
         score = 0
-
-        if move_info.IsMating:
-            score += 1_000_000
 
         if memo_entry.Valid and (move_info.From, move_info.To) == (memo_entry.Move.From, memo_entry.Move.To):
             score += 500_000
@@ -704,9 +724,7 @@ class Agent:
         return score
 
     @staticmethod
-    def find_best_move(game: GameState) -> Tuple[MoveInfo, int]:
-        depth = 5  # C# const int depth = 11
-
+    def find_best_move(game: GameState, depth: int) -> Tuple[MoveInfo, int]:
         # memo = {} # C# memo = []
 
         moves = sorted(game.get_legal_moves(), key=lambda m: Agent._key_selector(m, Agent.MemoEntry.Default), reverse=True)
@@ -735,9 +753,9 @@ class Agent:
 
             alpha = max(alpha, value)
 
-            if alpha >= beta or info.IsMating:
+            if alpha >= beta:
                 break
-        
+
         DrawDetector.do(GameState.Zobrist.update_hash(hash_val, best_move))  # do best move
 
         return best_move, max_val
@@ -752,56 +770,55 @@ def test_agent_game(game: GameState):
 
     while True:
         player = "White" if game.piece_is_movers('K') else "Black"
-        if game.is_drawn_by_only_kings():
-            print("Draw by 2 kings remaining")
-            break
-        if DrawDetector.check_for_draw():
-            print("Draw by repetition")
-            break
-        if game.current_player_is_mated():
-            print(f"{player} is mated")
-            break
 
-        move, value = Agent.find_best_move(game)
-
+        move, value = Agent.find_best_move(game, 4)
         game.apply_move(move)
-        
+        draw_by_kings = game.is_drawn_by_only_kings()
+        draw_by_repetition = DrawDetector.check_for_draw()
+        mated = game.current_player_is_mated()
+        checked = game._current_player_is_in_check()
+
         check_str = ""
         if move.IsChecking:
-            check_str = "#" if move.IsMating else "+"
-        elif move.IsMating:
-            check_str = "§" # C# code had this, preserving
+            check_str = "#" if mated else "+"
+        elif mated:
+            check_str = "§"
             
         print(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){check_str} with eval {value}")
         game.print_board()
         print("======")
 
+        if draw_by_kings:
+            print("Draw by 2 kings remaining")
+            break
+        if draw_by_repetition:
+            print("Draw by repetition")
+            break
+        if mated:
+            if checked:
+                print(f"{player} is checkmated")
+            else:
+                print(f"{player} is stalemated")
+            break
+
 if __name__ == "__main__":
+    standard = GameState()
+    
     g2 = GameState(
         """
-. Q . . .
-. . . . k
-. . R . .
-. P . . .
-. . . K N
-""", 
+k . . . K
+. . b . .
+. n . . .
+. . . . b
+. q . . .
+""",
         whiteToMove=False
-    )  # mate in 2
-
-    g3 = GameState(
-        """
-. . . . k
-. Q . . .
-. . R . .
-. P . . .
-. . . K N
-"""
-    )  # mate in 1
+    )
 
     # test_agent_game(g2)
 
     start_time = time.perf_counter()
-    test_agent_game(GameState())
+    test_agent_game(g2)
     end_time = time.perf_counter()
     
     ts = end_time - start_time
@@ -828,6 +845,8 @@ def piece_to_symbol(piece: CM_Piece | None) -> str:
 
     if name == 'Knight':
         symbol = 'N'
+    elif name == 'Pawn' and piece._moved_turns_ago == -1:
+        symbol = 'T'
     else:
         symbol = name[0]
 
@@ -905,6 +924,8 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     cm_player: CM_Player = player
     ply_id: int = var[0]
     timeout: float = var[1]
+    
+    depth = 6
 
     # Rip out the state from private attributes and methods from chessmaker
     # into our GameState
@@ -924,14 +945,17 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     state.enPassantTarget = Position(epTarget.x, epTarget.y) if epTarget is not None else Position.Null
     state.whiteToMove = (cm_player.name == "white")
 
-    move, value = Agent.find_best_move(state)
+    move, value = Agent.find_best_move(state, depth)
+    is_mating: bool = value == (1000 + depth - 1)
 
-    check_str = ""
-    if move.IsChecking:
-        check_str = "#" if move.IsMating else "+"
-    elif move.IsMating:
-        check_str = "§"
+    move_suffix = ""
+    if move.IsChecking and is_mating:
+        move_suffix = "#"
+    elif is_mating:
+        move_suffix = "§"
+    elif move.IsChecking:
+        move_suffix = "+"
         
-    print(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){check_str} with eval {value}")
+    print(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){move_suffix} with eval {value}")
 
     return find_move_on_cm_board(cm_board, move)
