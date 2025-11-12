@@ -22,3 +22,19 @@ sample1 = [
         [Square(Pawn_Q(white)), Square(Pawn_Q(white)), Square(Pawn_Q(white)), Square(Pawn_Q(white)),Square(Pawn_Q(white))],
         [Square(Bishop(white)), Square(Knight(white)),  Square(King(white)), Square(Queen(white)), Square(Right(white))],
         ]
+
+
+# sample2:
+# n k . b r
+# R . p . p
+# P . . . P
+# . P . P .
+# . . . K N
+
+sample2 = [
+        [Square(Knight(black)), Square(King(black)), Square(), Square(Bishop(black)), Square(Right(black))],
+        [Square(Right(white)), Square(), Square(Pawn_Q(black)), Square(),Square(Pawn_Q(black))],
+        [Square(Pawn_Q(white)), Square(), Square(), Square(),Square(Pawn_Q(white))],
+        [Square(), Square(Pawn_Q(white)), Square(), Square(Pawn_Q(white)),Square()],
+        [Square(), Square(),  Square(), Square(King(white)), Square(Knight(white))],
+        ]

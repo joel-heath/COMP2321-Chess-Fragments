@@ -584,30 +584,25 @@ class GameState:
 class MoveGenerator:
     @staticmethod
     def generate_moves(game: GameState, memo_entry: 'Agent.MemoEntry') -> Iterable[PositionPair]:
-        # Instead of running _move to find if moves are legal, we will just order by captures.
-        # Pros: Much faster move generation, no checking for legality or if checks, meaning more time saved through alpha-beta pruning.
-        # Cons: Less accurate move ordering, meaning less time saved through alpha-beta pruning.
-
-        # Hash Move > Check > Good Capture > Special Move > Bad Capture > Quiet Move
-
         if memo_entry.Valid:
             yield memo_entry.Move
 
-        # How to check for checking moves FAST?
-        # after move see if moved piece now attacks opponent king
-        # Check discovered checks:
-        # we check the horizontal, vertical, diagonal lines from empty position the piece moved from
-        # if king lies on none, no discovered check
-        # if it does, iterate along to see if there is an attacker, emptiness, and king only
-
-        good_captures = []
-        bad_captures = []
+        special_checks = []
         specials = []
+        good_captures = []
+        quiet_checks = []
         quiets = []
+        bad_captures = []
 
         for move in game._get_moves():
             if memo_entry.Valid and (move.From, move.To) == (memo_entry.Move.From, memo_entry.Move.To):
                 continue  # already yielded
+
+            is_check = False
+            if MoveGenerator._move_causes_check(game, move):
+                # yield move
+                # continue
+                is_check = True
 
             from_piece = game.board[move.From]
             to_piece = game.board[move.To]
@@ -618,32 +613,153 @@ class MoveGenerator:
 
                 score = 10 * victim - aggressor
                 
-                if aggressor == 1 and (move.To.y == 0 or move.To.y == 4):
+                if aggressor == 1 and (move.To.y == 0 or move.To.y == 4): # is pawn promotion capture
                     score += 5000
 
+                if is_check:
+                    score += 10000
+                
                 if victim > aggressor:
                     good_captures.append((score, move))
                 else:
                     bad_captures.append((score, move))
             else:
-                if ((from_piece == 'P' or from_piece == 'p' or from_piece == 'T' or from_piece == 't') and (move.To.y == 0 or move.To.y == 4)):
+                is_promo = (from_piece == 'P' or from_piece == 'p' or from_piece == 'T' or from_piece == 't') and (move.To.y == 0 or move.To.y == 4)
+
+                if is_promo and is_check:
+                    special_checks.append(move)
+                elif is_promo:
                     specials.append(move)
+                elif is_check:
+                    quiet_checks.append(move)
                 else:
                     quiets.append(move)
-            
+        
+        for move in special_checks:
+            yield move
+
+        for move in specials:
+            yield move
+
         good_captures.sort(reverse=True)
         for _, move in good_captures:
             yield move
         
-        for move in specials:
+        for move in quiet_checks:
             yield move
-        
+
+        for move in quiets:
+            yield move
+
         bad_captures.sort(reverse=True)
         for _, move in bad_captures:
             yield move
         
-        for move in quiets:
-            yield move
+
+    
+    @staticmethod
+    def _move_causes_check(game: GameState, move: PositionPair) -> bool:
+        # How to check for checking moves FAST?
+        # after move see if moved piece now attacks opponent king
+        # Check discovered checks:
+        # we check the horizontal, vertical, diagonal lines from empty position the piece moved from
+        # if king lies on none, no discovered check
+        # if it does, iterate along to see if there is an attacker, emptiness, and king only
+
+        promo_piece = game.board[move.From]
+        if promo_piece == 'P' or promo_piece == 'p' or promo_piece == 'T' or promo_piece == 't':
+            if move.To.y == 0 or move.To.y == 4:
+                promo_piece = 'Q' if game.whiteToMove else 'q'
+
+        # first, check if moved piece directly attacks opponent king
+        opponent_king = game.blackKing if game.whiteToMove else game.whiteKing
+        if MoveGenerator._piece_attacks_square(game, promo_piece, move.To, opponent_king):
+            return True
+        
+        # next, check for discovered checks
+        delta = opponent_king - move.From
+        
+        # check if delta is along rook, bishop, or queen lines
+        directions = []
+        if delta.x == 0 or delta.y == 0:
+            directions = GameState.rookDirections
+        elif abs(delta.x) == abs(delta.y):
+            directions = GameState.bishopDirections
+        else:
+            return False  # not along any line, no discovered check
+        
+        for direction in directions:
+            current = move.From + direction
+            found_king = False
+            while current.is_valid():
+                if current == opponent_king:
+                    found_king = True
+                    break
+                target_piece = game.board[current]
+                if target_piece != '.':
+                    break
+                current += direction
+            if found_king:
+                # now check if there is an attacker along this line
+                current = move.From - direction
+                while current.is_valid():
+                    target_piece = game.board[current]
+                    if target_piece != '.':
+                        if game.piece_is_movers(target_piece):
+                            if MoveGenerator._piece_attacks_square(game, target_piece, current, opponent_king):
+                                return True
+                        break
+                    current -= direction
+        return False
+
+        
+    @staticmethod
+    def _piece_attacks_square(game: GameState, piece: str, from_pos: Position, to_pos: Position) -> bool:
+        delta = to_pos - from_pos
+
+        if piece == 'P' or piece == 'p' or piece == 'T' or piece == 't':
+            direction = 1 if piece.isupper() else -1
+            if delta == Position(-1, direction) or delta == Position(1, direction):
+                return True
+            return False
+        elif piece == 'N' or piece == 'n':
+            return delta in GameState.knightMoves
+        elif piece == 'R' or piece == 'r':
+            if delta.x == 0:
+                step = Position(0, 1 if delta.y > 0 else -1)
+            elif delta.y == 0:
+                step = Position(1 if delta.x > 0 else -1, 0)
+            else:
+                return False
+            
+            current = from_pos + step
+            while current != to_pos:
+                if not current.is_valid() or game.board[current] != '.':
+                    return False
+                current += step
+            return True
+        elif piece == 'B' or piece == 'b':
+            if abs(delta.x) != abs(delta.y):
+                return False
+            step = Position(1 if delta.x > 0 else -1, 1 if delta.y > 0 else -1)
+            current = from_pos + step
+            while current != to_pos:
+                if not current.is_valid() or game.board[current] != '.':
+                    return False
+                current += step
+            return True
+        elif piece == 'Q' or piece == 'q':
+            # Combine rook and bishop logic
+            if delta.x == 0 or delta.y == 0:
+                return MoveGenerator._piece_attacks_square(game, 'R' if piece.isupper() else 'r', from_pos, to_pos)
+            elif abs(delta.x) == abs(delta.y):
+                return MoveGenerator._piece_attacks_square(game, 'B' if piece.isupper() else 'b', from_pos, to_pos)
+            else:
+                return False
+        elif piece == 'K' or piece == 'k':
+            return max(abs(delta.x), abs(delta.y)) == 1
+        
+        return False
     
 
     
@@ -772,38 +888,9 @@ class Agent:
         return max_val
 
     @staticmethod
-    def _key_selector(move_info: MoveInfo, memo_entry: 'Agent.MemoEntry') -> int:
-        # Hash Move > Check > Good Capture > Special Move > Bad Capture > Quiet Move
-        score = 0
-
-        if memo_entry.Valid and (move_info.From, move_info.To) == (memo_entry.Move.From, memo_entry.Move.To):
-            score += 500_000
-        elif move_info.IsChecking:
-            score += 100_000
-
-        victim_piece = move_info.ToPiece if move_info.ToPiece != '.' else move_info.EPPiece
-        if victim_piece != '.':
-            victim = Agent._piece_to_points(victim_piece)
-            aggressor = Agent._piece_to_points(move_info.FromPiece)
-            score += 10 * victim - aggressor
-            
-            if victim > aggressor:  # Good capture
-                score += 10_000
-            else:                   # Bad capture
-                score += 100
-
-        if move_info.IsPromotion:
-            score += 5000
-
-        return score
-
-    @staticmethod
     def find_best_move(game: GameState, depth: int) -> Tuple[MoveInfo, int]:
         # memo = {} # C# memo = []
 
-        moves = sorted(game.get_legal_moves(), key=lambda m: Agent._key_selector(m, Agent.MemoEntry.Default), reverse=True)
-
-        best_move = moves[0]
         max_val = -1_000_000_000 #-sys.maxsize
         alpha = -1_000_000_000 #-sys.maxsize
         beta = 1_000_000_000 #sys.maxsize
@@ -811,9 +898,15 @@ class Agent:
 
         DrawDetector.do(hash_val)  # do opponents move
 
-        for info in moves:
+        moves = MoveGenerator.generate_moves(game, Agent.MemoEntry.Default)
+        best_move = None
+        
+        for from_pos, to_pos in moves:
+            info = game._move(from_pos, to_pos)
+            if not info.IsLegal:
+                game.undo_move(info)
+                continue
             new_hash = GameState.Zobrist.update_hash(hash_val, info)
-            game.apply_move(info)
             DrawDetector.do(new_hash)
             
             value = -Agent._negamax(game, -beta, -alpha, depth - 1, info, new_hash)
@@ -845,7 +938,7 @@ def test_agent_game(game: GameState):
     while True:
         player = "White" if game.piece_is_movers('K') else "Black"
 
-        move, value = Agent.find_best_move(game, 4)
+        move, value = Agent.find_best_move(game, 8)
         game.apply_move(move)
         draw_by_kings = game.is_drawn_by_only_kings()
         draw_by_repetition = DrawDetector.check_for_draw()
@@ -892,7 +985,7 @@ k . . . K
     # test_agent_game(g2)
 
     start_time = time.perf_counter()
-    test_agent_game(g2)
+    test_agent_game(standard)
     end_time = time.perf_counter()
     
     ts = end_time - start_time
@@ -999,7 +1092,7 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     ply_id: int = var[0]
     timeout: float = var[1]
     
-    depth = 8
+    depth = 9
 
     # Rip out the state from private attributes and methods from chessmaker
     # into our GameState

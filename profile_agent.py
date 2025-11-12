@@ -39,6 +39,7 @@ if __name__ == "__main__":
 
 # measured in seconds
 
+# openings:
 #       |              chessmaker              |                      cs                         |  (no checks)   |
 # depth |       DFS | zobrist, PVS |    undoer |      init | faster check detect | no mate check | move generator |
 # ------|-----------|--------------|-----------|-----------|---------------------|---------------|----------------|
@@ -51,6 +52,11 @@ if __name__ == "__main__":
 #     7 |           |              |           | 24.099357 |           12.051640 |      2.791586 |       1.704799 |
 #     8 |           |              |           |           |                     |     11.774208 |       6.008288 |
 #     9 |           |              |           |           |                     |               |      15.932569 |
+
+# endgames:
+# depth | no checks | checking movegen | better ordering |
+# ------|-----------|------------------|-----------------|
+#     9 | 22.632020 |        14.210318 |       11.467532 |
 
 # undoer IDS:
 # Completed depth 1 (value = 0, time = 0.010992) 
