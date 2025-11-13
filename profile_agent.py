@@ -18,6 +18,7 @@ def profile_agent(agent_function, board, player, var):
 
 import time
 def time_agent(agent_function, board, player, var):
+    var = [0, 14.0]
     start_time = time.perf_counter()
     agent_function(board, player, var)
     end_time = time.perf_counter()

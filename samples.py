@@ -135,4 +135,4 @@ game3 = """
 game1 = parse_board_string(game1)
 game3 = parse_board_string(game3)
 
-sample0 = game1
+sample0 = game3

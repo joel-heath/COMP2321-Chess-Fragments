@@ -1,4 +1,3 @@
-import time
 from extension.board_utils import list_legal_moves_for, copy_piece_move, take_notes
 from extension.board_rules import only_2kings, cannot_move
 from chessmaker.chess.base import Board as CM_Board, Player as CM_Player, Piece as CM_Piece, MoveOption as CM_MoveOption, Position as CM_Position, Square as CM_Square
@@ -12,7 +11,7 @@ type CM_Move = tuple[CM_Piece, CM_MoveOption]
 ### == Beware of befuddling code == ###
 ### == Agent function at bottom of file == ###
 
-import sys
+import math
 import enum
 import random
 import time
@@ -281,6 +280,13 @@ class GameState:
                 current ^= GameState.Zobrist.zobrist_table[move.NewEnPassantTarget.x][move.NewEnPassantTarget.y][14]
 
             return current
+        
+        @staticmethod
+        def pass_turn(current: int, en_passant: Position) -> int:
+            if en_passant.is_valid():
+                current ^= GameState.Zobrist.zobrist_table[en_passant.x][en_passant.y][14]
+
+            return current ^ GameState.Zobrist.black_to_move
 
         @staticmethod
         def index_of(piece: str) -> int:
@@ -395,10 +401,6 @@ class GameState:
 
         # check legality first
         is_legal = not self._current_player_is_in_check()
-        is_check = False
-
-        if is_legal:
-            is_check = self._opponent_is_in_check()
 
         # finally switch sides for next move
         self.whiteToMove = not self.whiteToMove
@@ -411,7 +413,7 @@ class GameState:
             EP=en_passant_taken,
             EPPiece=ep_piece,
             PromotionPiece=promotion_piece,
-            IsChecking=is_check,
+            IsChecking=False,
             IsPromotion=is_promotion,
             IsLegal=is_legal,
             PreviousEnPassantTarget=previous_en_passant_target,
@@ -1031,7 +1033,7 @@ class Agent:
 
         if depth == 0:
             return Agent._quiescence(game, alpha, beta, ply, hash_val, Agent.MAX_Q_DEPTH)
-        
+
         index = hash_val & ((1 << 24) - 1)
         memo_entry = Agent.memo[index]
         if memo_entry and memo_entry.Depth >= depth:
@@ -1043,16 +1045,42 @@ class Agent:
                 beta = min(beta, memo_entry.Value)
             if alpha >= beta:
                 return memo_entry.Value
-
+        
         if game.is_drawn_by_only_kings():
             return 0
+
+        # Futility pruning
+        if depth == 1 or depth == 2:
+            static_eval = Agent._heuristic(game)
+            futility_margin = 3 - depth # 1 or 2 pawns
+            if static_eval + futility_margin < alpha:
+                return Agent._quiescence(game, alpha, beta, ply, hash_val, Agent.MAX_Q_DEPTH)
 
         max_val = -1_000_000_000 #-sys.maxsize
         best_move = MoveInfo.Default
         initial_alpha = alpha
         is_first_move = True
 
+        # Null Move Pruning
+        if depth >= 3 and not game._current_player_is_in_check():
+            game.whiteToMove = not game.whiteToMove
+            old_en_passant = game.enPassantTarget
+            game.enPassantTarget = Position.Null
+            new_hash = GameState.Zobrist.pass_turn(hash_val, old_en_passant)
+            DrawDetector.do(new_hash)
+
+            reduction = 2
+            value = -Agent._negamax(game, -beta, -beta + 1, depth - 1 - reduction, ply + 1, new_hash)
+
+            game.whiteToMove = not game.whiteToMove
+            game.enPassantTarget = old_en_passant
+            DrawDetector.undo(new_hash)
+
+            if value >= beta:
+                return beta 
+
         moves = MoveGenerator.generate_moves(game, memo_entry if memo_entry else Agent.MemoEntry.Default, ply)
+        move_index = 0
 
         for poistion_pair in moves:
             info = game._move(poistion_pair.From, poistion_pair.To)
@@ -1061,23 +1089,47 @@ class Agent:
                 continue
 
             # LMR
-            new_depth = depth - 1
-            if DrawDetector.moves_made() > 2 and not is_first_move and depth >= 3 and info.ToPiece == '.' and not info.IsChecking and not info.IsPromotion:
-                new_depth -= 1
+            move_index += 1
 
             new_hash = GameState.Zobrist.update_hash(hash_val, info)
             DrawDetector.do(new_hash)
 
             value = 0
-            if is_first_move:  # PVS (Principal Variation Search)
-                value = -Agent._negamax(game, -beta, -alpha, new_depth, ply + 1, new_hash)
-                is_first_move = False
+                    
+            if move_index == 1:
+                # --- 1. Principal Variation (PV) Move ---
+                # The first move (best_move from TT or history) is searched at full depth.
+                value = -Agent._negamax(game, -beta, -alpha, depth - 1, ply + 1, new_hash)
             else:
+                # --- 2. Non-PV Moves (LMR + Zero Window Search) ---
+                
+                # Calculate the reduction
+                reduction = 0
+                is_quiet = (info.ToPiece == '.' and not info.IsPromotion)
+                        
+                if depth >= 3 and is_quiet and not info.IsChecking:
+                    #if move_index >= 3:
+                    #    reduction = 1
+                    #if move_index >= 5 and depth >= 5:
+                    #    reduction = 2
+                    reduction = int(0.5 + math.log(depth) * math.log(move_index) / 2.0)
+                                
+                    # (Optional) The log-based formula I mentioned is:
+                    # Start with the integer version first, it's safer and faster.
+
+                    # Clamp reduction: Don't reduce too much
+                    reduction = max(0, reduction)
+                    reduction = min(reduction, depth - 2) # Don't reduce into q-search
+
+                # Search with the reduced depth and a "zero window"
+                new_depth = depth - 1 - reduction
                 value = -Agent._negamax(game, -(alpha + 1), -alpha, new_depth, ply + 1, new_hash)
+        
+                # --- 3. Re-search (if LMR was too aggressive) ---
                 if value > alpha:
-                    # promote to PV
-                    new_depth = depth - 1
-                    value = -Agent._negamax(game, -beta, -alpha, new_depth, ply + 1, new_hash)
+                # The zero-window search failed high. This move is *better* than expected.
+                # We must re-search at the *full* depth (depth - 1) with the *full* window.
+                    value = -Agent._negamax(game, -beta, -alpha, depth - 1, ply + 1, new_hash)
 
             DrawDetector.undo(new_hash)
             game.undo_move(info)
@@ -1116,12 +1168,10 @@ class Agent:
         return max_val
 
     @staticmethod
-    def find_best_move(game: GameState, depth: int) -> Tuple[MoveInfo, int]:
+    def find_best_move(game: GameState, depth: int, alpha = -1_000_000_000, beta = 1_000_000_000) -> Tuple[MoveInfo, int]:
         # memo = {} # C# memo = []
 
         max_val = -1_000_000_000 #-sys.maxsize
-        alpha = -1_000_000_000 #-sys.maxsize
-        beta = 1_000_000_000 #sys.maxsize
         hash_val = GameState.Zobrist.compute_hash(game)
 
         # Agent.killer_moves = [[None, None] for _ in range(Agent.MAX_SEARCH_DEPTH)]
@@ -1358,6 +1408,25 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
             break
             
         print(f"Searching depth {depth}...")
+
+        # --- Aspiration Window Logic ---
+        alpha = best_value - 1
+        beta = best_value + 1
+
+        move, value = Agent.find_best_move(state, depth, alpha, beta)
+
+        # 3. Check if the search "failed"
+        if value <= alpha or value >= beta:
+            print(f"  Aspiration failed (a={alpha}, b={beta}, v={value}). Re-searching with full window...")
+            # 4. Re-search with a full window
+            alpha = -1_000_000_000
+            beta =  1_000_000_000
+            move, value = Agent.find_best_move(state, depth, alpha, beta)
+        # --- End of Aspiration Logic ---
+
+        best_move_so_far = move
+        best_value = value
+
         move, value = Agent.find_best_move(state, depth)
             
         best_move_so_far = move
