@@ -583,74 +583,121 @@ class GameState:
 
 class MoveGenerator:
     @staticmethod
-    def generate_moves(game: GameState, memo_entry: 'Agent.MemoEntry') -> Iterable[PositionPair]:
+    def generate_moves(game: GameState, memo_entry: 'Agent.MemoEntry', ply: int) -> Iterable[PositionPair]:
+        
+        # --- Stage 1: Hash Move ---
+        # Yield the Transposition Table move immediately.
         if memo_entry.Valid:
-            yield memo_entry.Move
+            yield PositionPair(memo_entry.Move.From, memo_entry.Move.To)
 
-        special_checks = []
-        specials = []
+        # --- Initialize Buckets for Stages ---
+        promotions = []
         good_captures = []
+        killers = []
         quiet_checks = []
-        quiets = []
+        history_moves = []
         bad_captures = []
+        
+        # Get killer moves for this ply
+        k1, k2 = None, None
+        if ply < Agent.MAX_SEARCH_DEPTH:
+            k1 = Agent.killer_moves[ply][0]
+            k2 = Agent.killer_moves[ply][1]
 
+        # --- Scoring Constants ---
+        PROMO_CHECK_SCORE = 9_000_000
+        PROMO_SCORE = 8_000_000
+        GOOD_CAPTURE_BASE = 7_000_000
+        HISTORY_BASE = 3_000_000
+        BAD_CAPTURE_BASE = 1_000_000
+        CHECK_BONUS = 10_000 # Bonus for checking captures
+
+        # --- Stage 2: Single-pass Bucketing ---
+        # Iterate all pseudo-legal moves ONCE and sort them into buckets
         for move in game._get_moves():
-            if memo_entry.Valid and (move.From, move.To) == (memo_entry.Move.From, memo_entry.Move.To):
-                continue  # already yielded
-
-            is_check = False
-            if MoveGenerator._move_causes_check(game, move):
-                # yield move
-                # continue
-                is_check = True
+            reduced_move = ReducedMoveInfo(move.From, move.To)
+            
+            # Skip the hash move if we already yielded it
+            if memo_entry.Valid and reduced_move == memo_entry.Move:
+                continue
 
             from_piece = game.board[move.From]
             to_piece = game.board[move.To]
-            if to_piece != '.':
+            is_promo = (from_piece in ('P', 'p', 'T', 't')) and (move.To.y == 0 or move.To.y == 4)
 
+            # --- Bucket 2.1: Promotions ---
+            if is_promo:
+                # We only check for checks on high-priority moves to save time
+                is_check = MoveGenerator._move_causes_check(game, move)
+                score = PROMO_CHECK_SCORE if is_check else PROMO_SCORE
+                promotions.append((score, move))
+                continue
+
+            # --- Bucket 2.2: Captures (MVV-LVA) ---
+            if to_piece != '.':
                 victim = Agent._piece_to_points(to_piece)
                 aggressor = Agent._piece_to_points(from_piece)
-
-                score = 10 * victim - aggressor
+                mvv_lva_score = 10 * victim - aggressor
                 
-                if aggressor == 1 and (move.To.y == 0 or move.To.y == 4): # is pawn promotion capture
-                    score += 5000
-
-                if is_check:
-                    score += 10000
+                if victim > aggressor:
+                    # Good captures
+                    score = GOOD_CAPTURE_BASE + mvv_lva_score
+                else:
+                    # Bad captures
+                    score = BAD_CAPTURE_BASE + mvv_lva_score
                 
+                # Check for checks only if it's a good capture (or a promotion)
+                if victim > aggressor and MoveGenerator._move_causes_check(game, move):
+                     score += CHECK_BONUS
+
                 if victim > aggressor:
                     good_captures.append((score, move))
                 else:
                     bad_captures.append((score, move))
-            else:
-                is_promo = (from_piece == 'P' or from_piece == 'p' or from_piece == 'T' or from_piece == 't') and (move.To.y == 0 or move.To.y == 4)
+                continue
 
-                if is_promo and is_check:
-                    special_checks.append(move)
-                elif is_promo:
-                    specials.append(move)
-                elif is_check:
+            # --- Bucket 2.3: Quiet Moves (Killers, History, Checks) ---
+            # It must be a quiet move
+            if reduced_move == k1:
+                killers.append((2, move)) # Score 2 for 1st killer
+            elif reduced_move == k2:
+                killers.append((1, move)) # Score 1 for 2nd killer
+            else:
+                # Only check for checks *after* we've ruled out killers
+                if MoveGenerator._move_causes_check(game, move):
                     quiet_checks.append(move)
                 else:
-                    quiets.append(move)
+                    # History Heuristic
+                    score = Agent.history_table[move.From.x][move.From.y][move.To.x][move.To.y]
+                    history_moves.append((score, move))
+
+        # --- Stage 3: Yield from Buckets in Order ---
         
-        for move in special_checks:
+        # Yield Promotions (sorted by check/no-check)
+        promotions.sort(reverse=True)
+        for _, move in promotions:
             yield move
-
-        for move in specials:
-            yield move
-
+            
+        # Yield Good Captures (sorted by MVV-LVA)
         good_captures.sort(reverse=True)
         for _, move in good_captures:
             yield move
-        
+            
+        # Yield Killers (k1 then k2)
+        killers.sort(reverse=True)
+        for _, move in killers:
+            yield move
+            
+        # Yield Quiet Checks
         for move in quiet_checks:
             yield move
-
-        for move in quiets:
+            
+        # Yield History Moves (sorted by history score)
+        history_moves.sort(reverse=True)
+        for _, move in history_moves:
             yield move
-
+            
+        # Yield Bad Captures (sorted by MVV-LVA)
         bad_captures.sort(reverse=True)
         for _, move in bad_captures:
             yield move
@@ -769,6 +816,14 @@ class MoveGenerator:
 # Agent.cs
 # =============================================================================
 class Agent:
+    MAX_SEARCH_DEPTH = 64 
+    
+    # [ply][slot]
+    killer_moves: List[List[Optional[ReducedMoveInfo]]] = [[None, None] for _ in range(MAX_SEARCH_DEPTH)]
+    
+    # [from_x][from_y][to_x][to_y]
+    history_table: List[List[List[List[int]]]] = [[[[0 for _ in range(5)] for _ in range(5)] for _ in range(5)] for _ in range(5)]
+
     class MemoEntryType(enum.Enum):
         Exact = 0
         LowerBound = 1
@@ -809,7 +864,7 @@ class Agent:
         return heuristic
 
     @staticmethod
-    def _negamax(game: GameState, alpha: int, beta: int, depth: int, move_made: MoveInfo, hash_val: int) -> int:
+    def _negamax(game: GameState, alpha: int, beta: int, depth: int, ply: int, hash_val: int) -> int:
         if DrawDetector.is_drawn(hash_val):
             return 0
 
@@ -836,7 +891,7 @@ class Agent:
         initial_alpha = alpha
         is_first_move = True
 
-        moves = MoveGenerator.generate_moves(game, memo_entry if memo_entry else Agent.MemoEntry.Default)
+        moves = MoveGenerator.generate_moves(game, memo_entry if memo_entry else Agent.MemoEntry.Default, ply)
 
         for poistion_pair in moves:
             info = game._move(poistion_pair.From, poistion_pair.To)
@@ -846,7 +901,7 @@ class Agent:
 
             # LMR
             new_depth = depth - 1
-            if DrawDetector.moves_made() > 8 and not is_first_move and depth >= 3 and info.ToPiece == '.' and not info.IsChecking and not info.IsPromotion:
+            if DrawDetector.moves_made() > 2 and not is_first_move and depth >= 3 and info.ToPiece == '.' and not info.IsChecking and not info.IsPromotion:
                 new_depth -= 1
 
             new_hash = GameState.Zobrist.update_hash(hash_val, info)
@@ -854,14 +909,14 @@ class Agent:
 
             value = 0
             if is_first_move:  # PVS (Principal Variation Search)
-                value = -Agent._negamax(game, -beta, -alpha, new_depth, info, new_hash)
+                value = -Agent._negamax(game, -beta, -alpha, new_depth, ply + 1, new_hash)
                 is_first_move = False
             else:
-                value = -Agent._negamax(game, -(alpha + 1), -alpha, new_depth, info, new_hash)
+                value = -Agent._negamax(game, -(alpha + 1), -alpha, new_depth, ply + 1, new_hash)
                 if value > alpha:
                     # promote to PV
                     new_depth = depth - 1
-                    value = -Agent._negamax(game, -beta, -alpha, new_depth, info, new_hash)
+                    value = -Agent._negamax(game, -beta, -alpha, new_depth, ply + 1, new_hash)
 
             DrawDetector.undo(new_hash)
             game.undo_move(info)
@@ -869,9 +924,20 @@ class Agent:
             if value > max_val:
                 max_val = value
                 best_move = info
+                
+                # Update history heuristic for good quiet moves
+                if info.ToPiece == '.' and not info.IsPromotion:
+                    # Reward based on remaining depth squared
+                    Agent.history_table[info.From.x][info.From.y][info.To.x][info.To.y] += depth * depth
             
             alpha = max(alpha, value)
             if alpha >= beta:
+                # NEW: This quiet move caused a beta-cutoff, store it as a killer move
+                if info.ToPiece == '.' and not info.IsPromotion:
+                    reduced_move = info.to_reduced_move_info()
+                    if reduced_move != Agent.killer_moves[ply][0]:
+                        Agent.killer_moves[ply][1] = Agent.killer_moves[ply][0]
+                        Agent.killer_moves[ply][0] = reduced_move
                 break
         
         if best_move == MoveInfo.Default:
@@ -896,9 +962,12 @@ class Agent:
         beta = 1_000_000_000 #sys.maxsize
         hash_val = GameState.Zobrist.compute_hash(game)
 
+        # Agent.killer_moves = [[None, None] for _ in range(Agent.MAX_SEARCH_DEPTH)]
+        # Agent.history_table = [[[[0 for _ in range(5)] for _ in range(5)] for _ in range(5)] for _ in range(5)]
+
         DrawDetector.do(hash_val)  # do opponents move
 
-        moves = MoveGenerator.generate_moves(game, Agent.MemoEntry.Default)
+        moves = MoveGenerator.generate_moves(game, Agent.MemoEntry.Default, 0)
         best_move = None
         
         for from_pos, to_pos in moves:
@@ -909,7 +978,7 @@ class Agent:
             new_hash = GameState.Zobrist.update_hash(hash_val, info)
             DrawDetector.do(new_hash)
             
-            value = -Agent._negamax(game, -beta, -alpha, depth - 1, info, new_hash)
+            value = -Agent._negamax(game, -beta, -alpha, depth - 1, 1, new_hash)
             
             DrawDetector.undo(new_hash)
             game.undo_move(info)
@@ -1086,13 +1155,15 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     - Use the timeout variable together with time.perf_counter()
     to ensure the agent returns its best move before the time limit expires.
     """
+    start_time = time.perf_counter()
+
     global state
     cm_board: CM_Board = board
     cm_player: CM_Player = player
     ply_id: int = var[0]
     timeout: float = var[1]
     
-    depth = 9
+    depth = 10
 
     # Rip out the state from private attributes and methods from chessmaker
     # into our GameState
@@ -1112,8 +1183,37 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     state.enPassantTarget = Position(epTarget.x, epTarget.y) if epTarget is not None else Position.Null
     state.whiteToMove = (cm_player.name == "white")
 
-    move, value = Agent.find_best_move(state, depth)
-    is_mating: bool = value == (1000 + depth - 1)
+    # == Iterative deepening loop ==
+
+    max_search_depth = 10
+    best_move_so_far = None
+    best_value = -1_000_000_000
+    is_mating: bool
+    depth = 1
+
+    while True:
+        depth += 1
+
+        if time.perf_counter() - start_time > timeout - 0.1:
+            print(f"Timeout! Returning best move from depth {depth - 1}")
+            break
+            
+        print(f"Searching depth {depth}...")
+        move, value = Agent.find_best_move(state, depth)
+            
+        best_move_so_far = move
+        best_value = value
+
+        # Check for forced mate
+        is_mating = value == (1000 + depth - 1)
+        if is_mating:
+            print(f"Found mate at depth {depth}!")
+            break # No need to search deeper
+
+    # --- END OF LOOP ---
+    
+    move = best_move_so_far
+    value = best_value
 
     move_suffix = ""
     if move.IsChecking and is_mating:
