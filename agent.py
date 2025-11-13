@@ -583,6 +583,78 @@ class GameState:
 
 class MoveGenerator:
     @staticmethod
+    def _is_forcing(game: GameState, move: PositionPair) -> bool:
+        """Helper to check if a move is a capture or promotion."""
+        from_piece = game.board[move.From]
+        to_piece = game.board[move.To]
+        
+        is_pawn = from_piece in ('P', 'p', 'T', 't')
+        is_promo = is_pawn and (move.To.y == 0 or move.To.y == 4)
+        is_ep = is_pawn and move.To == game.enPassantTarget
+        is_capture = to_piece != '.' or is_ep
+
+        return is_promo or is_capture
+
+    @staticmethod
+    def generate_q_moves(game: GameState, memo_entry: 'Agent.MemoEntry') -> Iterable[PositionPair]:
+        """
+        Generates 'forcing' moves, prioritizing the TT 'hash_move' if it's
+        a capture/promotion, then sorting the rest by MVV-LVA.
+        """
+        
+        # --- Stage 1: Yield Hash Move ---
+        # The hash move is the best move from a previous search.
+        # If it's a forcing move, we MUST search it first.
+        hash_move: Optional[ReducedMoveInfo] = None
+        if memo_entry.Valid:
+            hash_move_pair = PositionPair(memo_entry.Move.From, memo_entry.Move.To)
+            if MoveGenerator._is_forcing(game, hash_move_pair):
+                hash_move = memo_entry.Move
+                yield hash_move_pair
+
+        # --- Scoring Constants ---
+        PROMO_SCORE = 8_000_000
+        CAPTURE_BASE = 7_000_000
+        
+        q_moves: List[Tuple[int, PositionPair]] = []
+
+        for move in game._get_moves():
+            # Skip the hash move if we already yielded it
+            if hash_move and move.From == hash_move.From and move.To == hash_move.To:
+                continue
+            
+            from_piece = game.board[move.From]
+            to_piece = game.board[move.To]
+            
+            is_promo = (from_piece in ('P', 'p', 'T', 't')) and (move.To.y == 0 or move.To.y == 4)
+            is_ep = (from_piece in ('P', 'p', 'T', 't')) and move.To == game.enPassantTarget
+            is_capture = to_piece != '.' or is_ep
+
+            if is_promo:
+                score = PROMO_SCORE
+                if is_capture:
+                    victim_piece = to_piece if not is_ep else ('p' if game.whiteToMove else 'P')
+                    victim = Agent._piece_to_points(victim_piece)
+                    score += (10 * victim)
+                q_moves.append((score, move))
+                
+            elif is_capture:
+                victim_piece = to_piece if not is_ep else ('p' if game.whiteToMove else 'P')
+                aggressor = Agent._piece_to_points(from_piece)
+                victim = Agent._piece_to_points(victim_piece)
+                
+                mvv_lva_score = 10 * victim - aggressor
+                score = CAPTURE_BASE + mvv_lva_score
+                q_moves.append((score, move))
+            
+            # All other moves (quiet moves) are ignored
+
+        # --- Stage 2: Yield Sorted Moves ---
+        q_moves.sort(reverse=True)
+        for score, move in q_moves:
+            yield move
+
+    @staticmethod
     def generate_moves(game: GameState, memo_entry: 'Agent.MemoEntry', ply: int) -> Iterable[PositionPair]:
         
         # --- Stage 1: Hash Move ---
@@ -816,7 +888,8 @@ class MoveGenerator:
 # Agent.cs
 # =============================================================================
 class Agent:
-    MAX_SEARCH_DEPTH = 64 
+    MAX_SEARCH_DEPTH = 64
+    MAX_Q_DEPTH = 8
     
     # [ply][slot]
     killer_moves: List[List[Optional[ReducedMoveInfo]]] = [[None, None] for _ in range(MAX_SEARCH_DEPTH)]
@@ -864,12 +937,100 @@ class Agent:
         return heuristic
 
     @staticmethod
+    def _quiescence(game: GameState, alpha: int, beta: int, ply: int, hash_val: int, q_depth: int) -> int:
+        """
+        Quiescence search with correct TT probing and storing at Depth = 0.
+        Only evaluates forcing moves (captures, promotions).
+        """
+        if DrawDetector.is_drawn(hash_val):
+            return 0
+
+        # === 1. TT Probe (as Depth 0) ===
+        
+        # THIS IS THE KEY: The "depth" for all q-search TT entries is 0.
+        q_search_tt_depth = 0 
+        
+        index = hash_val & ((1 << 24) - 1)
+        memo_entry = Agent.memo[index]
+        
+        # We probe for any entry with depth >= 0.
+        # This will find other q-search results (depth 0)
+        # AND deep main-search results (depth > 0), which is great.
+        if memo_entry and memo_entry.Depth >= q_search_tt_depth:
+            if memo_entry.Type == Agent.MemoEntryType.Exact:
+                return memo_entry.Value
+            elif memo_entry.Type == Agent.MemoEntryType.LowerBound:
+                alpha = max(alpha, memo_entry.Value)
+            elif memo_entry.Type == Agent.MemoEntryType.UpperBound:
+                beta = min(beta, memo_entry.Value)
+            if alpha >= beta:
+                return memo_entry.Value
+
+        if q_depth == 0:
+            return Agent._heuristic(game)  # Max quiescence recursion reached
+
+        # === 2. Stand-Pat Score ===
+        stand_pat_score = Agent._heuristic(game)
+        if stand_pat_score >= beta:
+            # We are failing high. Store this as a Depth 0 LowerBound.
+            # We don't need to check for overwrites, as storing a bound
+            # that causes a cutoff is always good.
+            Agent.memo[index] = Agent.MemoEntry(stand_pat_score, q_search_tt_depth, Agent.MemoEntryType.LowerBound, ReducedMoveInfo(Position.Null, Position.Null))
+            return beta
+        
+        alpha = max(alpha, stand_pat_score)
+        
+        max_val = stand_pat_score
+        initial_alpha = alpha
+        best_move_info = ReducedMoveInfo(Position.Null, Position.Null)
+
+        # === 3. Generate and Search Forcing Moves ===
+        valid_memo_entry = memo_entry if memo_entry else Agent.MemoEntry.Default
+        moves = MoveGenerator.generate_q_moves(game, valid_memo_entry) # Still use TT move to order
+
+        for position_pair in moves:
+            info = game._move(position_pair.From, position_pair.To)
+            if not info.IsLegal:
+                game.undo_move(info)
+                continue
+
+            new_hash = GameState.Zobrist.update_hash(hash_val, info)
+            DrawDetector.do(new_hash)
+
+            value = -Agent._quiescence(game, -beta, -alpha, ply + 1, new_hash, q_depth - 1)
+
+            DrawDetector.undo(new_hash)
+            game.undo_move(info)
+
+            if value > max_val:
+                max_val = value
+                best_move_info = info.to_reduced_move_info()
+
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        
+        # === 4. TT Store (as Depth 0) ===
+        memo_type = Agent.MemoEntryType.Exact
+        if max_val <= initial_alpha:
+            memo_type = Agent.MemoEntryType.UpperBound
+        elif max_val >= beta:
+            memo_type = Agent.MemoEntryType.LowerBound
+        
+        # CRITICAL: Only store this Depth 0 entry if it's not
+        # overwriting a *deeper* main search entry.
+        if not memo_entry or q_search_tt_depth >= memo_entry.Depth:
+             Agent.memo[index] = Agent.MemoEntry(max_val, q_search_tt_depth, memo_type, best_move_info)
+
+        return max_val
+
+    @staticmethod
     def _negamax(game: GameState, alpha: int, beta: int, depth: int, ply: int, hash_val: int) -> int:
         if DrawDetector.is_drawn(hash_val):
             return 0
 
         if depth == 0:
-            return Agent._heuristic(game)
+            return Agent._quiescence(game, alpha, beta, ply, hash_val, Agent.MAX_Q_DEPTH)
         
         index = hash_val & ((1 << 24) - 1)
         memo_entry = Agent.memo[index]
@@ -949,7 +1110,8 @@ class Agent:
         elif max_val >= beta:
             memo_type = Agent.MemoEntryType.LowerBound
         
-        Agent.memo[index] = Agent.MemoEntry(max_val, depth, memo_type, best_move.to_reduced_move_info())
+        if not memo_entry or depth >= memo_entry.Depth:
+            Agent.memo[index] = Agent.MemoEntry(max_val, depth, memo_type, best_move.to_reduced_move_info())
 
         return max_val
 
@@ -1163,8 +1325,6 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     ply_id: int = var[0]
     timeout: float = var[1]
     
-    depth = 10
-
     # Rip out the state from private attributes and methods from chessmaker
     # into our GameState
     epTarget: CM_Position | None = None
@@ -1185,11 +1345,10 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
 
     # == Iterative deepening loop ==
 
-    max_search_depth = 10
     best_move_so_far = None
     best_value = -1_000_000_000
     is_mating: bool
-    depth = 1
+    depth = 0
 
     while True:
         depth += 1
