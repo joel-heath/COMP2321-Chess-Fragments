@@ -939,11 +939,14 @@ class Agent:
         return heuristic
 
     @staticmethod
-    def _quiescence(game: GameState, alpha: int, beta: int, ply: int, hash_val: int, q_depth: int) -> int:
+    def _quiescence(game: GameState, alpha: int, beta: int, ply: int, hash_val: int, q_depth: int, start_time: int, time_limit: int) -> int:
         """
         Quiescence search with correct TT probing and storing at Depth = 0.
         Only evaluates forcing moves (captures, promotions).
         """
+        if time.perf_counter() - start_time > time_limit:
+            raise TimeoutError()
+
         if DrawDetector.is_drawn(hash_val):
             return 0
 
@@ -999,7 +1002,7 @@ class Agent:
             new_hash = GameState.Zobrist.update_hash(hash_val, info)
             DrawDetector.do(new_hash)
 
-            value = -Agent._quiescence(game, -beta, -alpha, ply + 1, new_hash, q_depth - 1)
+            value = -Agent._quiescence(game, -beta, -alpha, ply + 1, new_hash, q_depth - 1, start_time, time_limit)
 
             DrawDetector.undo(new_hash)
             game.undo_move(info)
@@ -1027,12 +1030,15 @@ class Agent:
         return max_val
 
     @staticmethod
-    def _negamax(game: GameState, alpha: int, beta: int, depth: int, ply: int, hash_val: int) -> int:
+    def _negamax(game: GameState, alpha: int, beta: int, depth: int, ply: int, hash_val: int, start_time: int, time_limit: int) -> int:
+        if time.perf_counter() - start_time > time_limit:
+            raise TimeoutError()
+
         if DrawDetector.is_drawn(hash_val):
             return 0
 
         if depth == 0:
-            return Agent._quiescence(game, alpha, beta, ply, hash_val, Agent.MAX_Q_DEPTH)
+            return Agent._quiescence(game, alpha, beta, ply, hash_val, Agent.MAX_Q_DEPTH, start_time, time_limit)
 
         index = hash_val & ((1 << 24) - 1)
         memo_entry = Agent.memo[index]
@@ -1054,12 +1060,7 @@ class Agent:
             static_eval = Agent._heuristic(game)
             futility_margin = 3 - depth # 1 or 2 pawns
             if static_eval + futility_margin < alpha:
-                return Agent._quiescence(game, alpha, beta, ply, hash_val, Agent.MAX_Q_DEPTH)
-
-        max_val = -1_000_000_000 #-sys.maxsize
-        best_move = MoveInfo.Default
-        initial_alpha = alpha
-        is_first_move = True
+                return Agent._quiescence(game, alpha, beta, ply, hash_val, Agent.MAX_Q_DEPTH, start_time, time_limit)
 
         # Null Move Pruning
         if depth >= 3 and not game._current_player_is_in_check():
@@ -1070,7 +1071,7 @@ class Agent:
             DrawDetector.do(new_hash)
 
             reduction = 2
-            value = -Agent._negamax(game, -beta, -beta + 1, depth - 1 - reduction, ply + 1, new_hash)
+            value = -Agent._negamax(game, -beta, -beta + 1, depth - 1 - reduction, ply + 1, new_hash, start_time, time_limit)
 
             game.whiteToMove = not game.whiteToMove
             game.enPassantTarget = old_en_passant
@@ -1079,8 +1080,12 @@ class Agent:
             if value >= beta:
                 return beta 
 
-        moves = MoveGenerator.generate_moves(game, memo_entry if memo_entry else Agent.MemoEntry.Default, ply)
+        max_val = -1_000_000_000 #-sys.maxsize
+        best_move = MoveInfo.Default
+        initial_alpha = alpha
         move_index = 0
+
+        moves = MoveGenerator.generate_moves(game, memo_entry if memo_entry else Agent.MemoEntry.Default, ply)
 
         for poistion_pair in moves:
             info = game._move(poistion_pair.From, poistion_pair.To)
@@ -1099,7 +1104,7 @@ class Agent:
             if move_index == 1:
                 # --- 1. Principal Variation (PV) Move ---
                 # The first move (best_move from TT or history) is searched at full depth.
-                value = -Agent._negamax(game, -beta, -alpha, depth - 1, ply + 1, new_hash)
+                value = -Agent._negamax(game, -beta, -alpha, depth - 1, ply + 1, new_hash, start_time, time_limit)
             else:
                 # --- 2. Non-PV Moves (LMR + Zero Window Search) ---
                 
@@ -1123,13 +1128,13 @@ class Agent:
 
                 # Search with the reduced depth and a "zero window"
                 new_depth = depth - 1 - reduction
-                value = -Agent._negamax(game, -(alpha + 1), -alpha, new_depth, ply + 1, new_hash)
+                value = -Agent._negamax(game, -(alpha + 1), -alpha, new_depth, ply + 1, new_hash, start_time, time_limit)
         
                 # --- 3. Re-search (if LMR was too aggressive) ---
                 if value > alpha:
                 # The zero-window search failed high. This move is *better* than expected.
                 # We must re-search at the *full* depth (depth - 1) with the *full* window.
-                    value = -Agent._negamax(game, -beta, -alpha, depth - 1, ply + 1, new_hash)
+                    value = -Agent._negamax(game, -beta, -alpha, depth - 1, ply + 1, new_hash, start_time, time_limit)
 
             DrawDetector.undo(new_hash)
             game.undo_move(info)
@@ -1153,7 +1158,7 @@ class Agent:
                         Agent.killer_moves[ply][0] = reduced_move
                 break
         
-        if best_move == MoveInfo.Default:
+        if move_index == 0: # best_move == MoveInfo.Default:
             return -(1000 + depth) # no legal moves, you have been mated
 
         memo_type = Agent.MemoEntryType.Exact
@@ -1168,8 +1173,11 @@ class Agent:
         return max_val
 
     @staticmethod
-    def find_best_move(game: GameState, depth: int, alpha = -1_000_000_000, beta = 1_000_000_000) -> Tuple[MoveInfo, int]:
+    def find_best_move(game: GameState, depth: int, start_time: int, time_limit: int, alpha = -1_000_000_000, beta = 1_000_000_000) -> Tuple[MoveInfo, int]:
         # memo = {} # C# memo = []
+
+        if time.perf_counter() - start_time > time_limit:
+            raise TimeoutError()
 
         max_val = -1_000_000_000 #-sys.maxsize
         hash_val = GameState.Zobrist.compute_hash(game)
@@ -1190,7 +1198,7 @@ class Agent:
             new_hash = GameState.Zobrist.update_hash(hash_val, info)
             DrawDetector.do(new_hash)
             
-            value = -Agent._negamax(game, -beta, -alpha, depth - 1, 1, new_hash)
+            value = -Agent._negamax(game, -beta, -alpha, depth - 1, 1, new_hash, start_time, time_limit)
             
             DrawDetector.undo(new_hash)
             game.undo_move(info)
@@ -1373,7 +1381,7 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     cm_board: CM_Board = board
     cm_player: CM_Player = player
     ply_id: int = var[0]
-    timeout: float = var[1]
+    timeout: float = var[1] - 0.1
     
     # Rip out the state from private attributes and methods from chessmaker
     # into our GameState
@@ -1400,43 +1408,38 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     is_mating: bool
     depth = 0
 
-    while True:
-        depth += 1
+    try:
+        while True:
+            depth += 1
+                
+            print(f"Searching depth {depth}...")
 
-        if time.perf_counter() - start_time > timeout - 0.1:
-            print(f"Timeout! Returning best move from depth {depth - 1}")
-            break
-            
-        print(f"Searching depth {depth}...")
+            # --- Aspiration Window Logic ---
+            alpha = best_value - 1
+            beta = best_value + 1
 
-        # --- Aspiration Window Logic ---
-        alpha = best_value - 1
-        beta = best_value + 1
+            move, value = Agent.find_best_move(state, depth, start_time, timeout, alpha, beta)
 
-        move, value = Agent.find_best_move(state, depth, alpha, beta)
+            # 3. Check if the search "failed"
+            if value <= alpha or value >= beta:
+                print(f"  Aspiration failed (a={alpha}, b={beta}, v={value}). Re-searching with full window...")
+                # 4. Re-search with a full window
+                alpha = -1_000_000_000
+                beta =  1_000_000_000
+                move, value = Agent.find_best_move(state, depth, start_time, timeout, alpha, beta)
+            # --- End of Aspiration Logic ---
 
-        # 3. Check if the search "failed"
-        if value <= alpha or value >= beta:
-            print(f"  Aspiration failed (a={alpha}, b={beta}, v={value}). Re-searching with full window...")
-            # 4. Re-search with a full window
-            alpha = -1_000_000_000
-            beta =  1_000_000_000
-            move, value = Agent.find_best_move(state, depth, alpha, beta)
-        # --- End of Aspiration Logic ---
+            best_move_so_far = move
+            best_value = value
 
-        best_move_so_far = move
-        best_value = value
+            # Check for forced mate
+            is_mating = value == (1000 + depth - 1)
+            if is_mating:
+                print(f"Found mate at depth {depth}!")
+                break # No need to search deeper
 
-        move, value = Agent.find_best_move(state, depth)
-            
-        best_move_so_far = move
-        best_value = value
-
-        # Check for forced mate
-        is_mating = value == (1000 + depth - 1)
-        if is_mating:
-            print(f"Found mate at depth {depth}!")
-            break # No need to search deeper
+    except TimeoutError:
+        print(f"Timeout! Returning best move from depth {depth - 1}")
 
     # --- END OF LOOP ---
     
