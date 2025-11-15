@@ -1,7 +1,7 @@
-from extension.board_utils import list_legal_moves_for, copy_piece_move, take_notes
-from extension.board_rules import only_2kings, cannot_move
+# from extension.board_utils import list_legal_moves_for, copy_piece_move, take_notes
+# from extension.board_rules import only_2kings, cannot_move
 from chessmaker.chess.base import Board as CM_Board, Player as CM_Player, Piece as CM_Piece, MoveOption as CM_MoveOption, Position as CM_Position, Square as CM_Square
-from chessmaker.chess.pieces import King as CM_King
+# from chessmaker.chess.pieces import King as CM_King
 from typing import Iterable
 
 type CM_Move = tuple[CM_Piece, CM_MoveOption]
@@ -16,7 +16,7 @@ import enum
 import random
 import time
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional, Iterable, NamedTuple, Set
+from typing import List, Tuple, Dict, Optional, NamedTuple
 from functools import total_ordering
 
 # =============================================================================
@@ -1217,73 +1217,6 @@ class Agent:
         return best_move, max_val
 
 
-# =============================================================================
-# Program.cs
-# =============================================================================
-def test_agent_game(game: GameState):
-    game.print_board()
-    print("======")
-
-    while True:
-        player = "White" if game.piece_is_movers('K') else "Black"
-
-        move, value = Agent.find_best_move(game, 8)
-        game.apply_move(move)
-        draw_by_kings = game.is_drawn_by_only_kings()
-        draw_by_repetition = DrawDetector.check_for_draw()
-        mated = game.current_player_is_mated()
-        checked = game._current_player_is_in_check()
-
-        check_str = ""
-        if move.IsChecking:
-            check_str = "#" if mated else "+"
-        elif mated:
-            check_str = "§"
-            
-        print(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){check_str} with eval {value}")
-        game.print_board()
-        print("======")
-
-        if draw_by_kings:
-            print("Draw by 2 kings remaining")
-            break
-        if draw_by_repetition:
-            print("Draw by repetition")
-            break
-        if mated:
-            if checked:
-                print(f"{player} is checkmated")
-            else:
-                print(f"{player} is stalemated")
-            break
-
-if __name__ == "__main__":
-    standard = GameState()
-    
-    g2 = GameState(
-        """
-k . . . K
-. . b . .
-. n . . .
-. . . . b
-. q . . .
-""",
-        whiteToMove=False
-    )
-
-    # test_agent_game(g2)
-
-    start_time = time.perf_counter()
-    test_agent_game(standard)
-    end_time = time.perf_counter()
-    
-    ts = end_time - start_time
-    minutes = int(ts // 60)
-    seconds = ts % 60
-    
-    print(f"Time taken: {minutes:02}:{seconds:05.2f}")
-
-
 ### == Here marks the end of the translated C# agent == ###
 ### == Celebrate for the beffudlement has come to an end == ###
 ### == Below is conversion from chessmaker types to our agent types == ###
@@ -1388,15 +1321,20 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     epTarget: CM_Position | None = None
     for row in cm_board._squares:
         for square in row:
-            if square is None:
-                raise ValueError("Square is None")
             piece: CM_Piece | None = square.piece
             position: CM_Position = square.position
             symbol = piece_to_symbol(piece)
-            state.board[to_cs_position(position)] = symbol
+            pos = to_cs_position(position)
+            state.board[pos] = symbol
 
             if epTarget is None:
                 epTarget = find_en_passant_target(cm_board, piece)
+
+            if symbol == 'K':
+                state.whiteKing = pos
+            elif symbol == 'k':
+                state.blackKing = pos
+
 
     state.enPassantTarget = Position(epTarget.x, epTarget.y) if epTarget is not None else Position.Null
     state.whiteToMove = (cm_player.name == "white")
