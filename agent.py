@@ -94,7 +94,6 @@ class MoveInfo:
     PromotionPiece: str  # What FromPiece becomes after move, unchanged except for pawn promotion to queen or double jumping pawn to normal pawn
     EP: Position  # The piece position captured by en passant
     EPPiece: str  # The piece captured by en passant
-    IsChecking: bool
     IsPromotion: bool
     IsLegal: bool
     PreviousEnPassantTarget: Position
@@ -112,7 +111,6 @@ MoveInfo.Default = MoveInfo(
     EP=Position.Null,
     EPPiece='.',
     PromotionPiece='.',
-    IsChecking=False,
     IsPromotion=False,
     IsLegal=False,
     PreviousEnPassantTarget=Position.Null,
@@ -367,7 +365,7 @@ class GameState:
     def is_drawn_by_only_kings(self) -> bool:
         return all(p == '.' or p == 'K' or p == 'k' for p, pos in self.get_positions())
 
-    def _move(self, move_from: Position, move_to: Position, limit_depth: bool = False) -> MoveInfo:
+    def _move(self, move_from: Position, move_to: Position) -> MoveInfo:
         from_piece = self.board[move_from]
         to_piece = self.board[move_to]
         ep_piece = '.'
@@ -413,7 +411,6 @@ class GameState:
             EP=en_passant_taken,
             EPPiece=ep_piece,
             PromotionPiece=promotion_piece,
-            IsChecking=False,
             IsPromotion=is_promotion,
             IsLegal=is_legal,
             PreviousEnPassantTarget=previous_en_passant_target,
@@ -657,12 +654,12 @@ class MoveGenerator:
             yield move
 
     @staticmethod
-    def generate_moves(game: GameState, memo_entry: 'Agent.MemoEntry', ply: int) -> Iterable[PositionPair]:
-        
+    def generate_moves(game: GameState, memo_entry: 'Agent.MemoEntry', ply: int) -> Iterable[tuple[PositionPair, bool]]:
         # --- Stage 1: Hash Move ---
         # Yield the Transposition Table move immediately.
         if memo_entry.Valid:
-            yield PositionPair(memo_entry.Move.From, memo_entry.Move.To)
+            pair = PositionPair(memo_entry.Move.From, memo_entry.Move.To)
+            yield pair, MoveGenerator._move_causes_check(game, pair)
 
         # --- Initialize Buckets for Stages ---
         promotions = []
@@ -704,7 +701,7 @@ class MoveGenerator:
                 # We only check for checks on high-priority moves to save time
                 is_check = MoveGenerator._move_causes_check(game, move)
                 score = PROMO_CHECK_SCORE if is_check else PROMO_SCORE
-                promotions.append((score, move))
+                promotions.append((score, move, is_check))
                 continue
 
             # --- Bucket 2.2: Captures (MVV-LVA) ---
@@ -720,14 +717,17 @@ class MoveGenerator:
                     # Bad captures
                     score = BAD_CAPTURE_BASE + mvv_lva_score
                 
+                is_check = None 
                 # Check for checks only if it's a good capture (or a promotion)
-                if victim > aggressor and MoveGenerator._move_causes_check(game, move):
-                     score += CHECK_BONUS
+                if victim > aggressor:
+                    is_check = MoveGenerator._move_causes_check(game, move)
+                    if is_check:
+                        score += CHECK_BONUS
 
                 if victim > aggressor:
-                    good_captures.append((score, move))
+                    good_captures.append((score, move, is_check))
                 else:
-                    bad_captures.append((score, move))
+                    bad_captures.append((score, move, is_check))
                 continue
 
             # --- Bucket 2.3: Quiet Moves (Killers, History, Checks) ---
@@ -738,7 +738,8 @@ class MoveGenerator:
                 killers.append((1, move)) # Score 1 for 2nd killer
             else:
                 # Only check for checks *after* we've ruled out killers
-                if MoveGenerator._move_causes_check(game, move):
+                is_check = MoveGenerator._move_causes_check(game, move)
+                if is_check:
                     quiet_checks.append(move)
                 else:
                     # History Heuristic
@@ -749,35 +750,33 @@ class MoveGenerator:
         
         # Yield Promotions (sorted by check/no-check)
         promotions.sort(reverse=True)
-        for _, move in promotions:
-            yield move
+        for _, move, is_check in promotions:
+            yield move, is_check
             
         # Yield Good Captures (sorted by MVV-LVA)
         good_captures.sort(reverse=True)
-        for _, move in good_captures:
-            yield move
-            
+        for _, move, is_check in good_captures:
+            yield move, is_check
+
         # Yield Killers (k1 then k2)
         killers.sort(reverse=True)
         for _, move in killers:
-            yield move
+            yield move, None
             
         # Yield Quiet Checks
         for move in quiet_checks:
-            yield move
+            yield move, True
             
         # Yield History Moves (sorted by history score)
         history_moves.sort(reverse=True)
         for _, move in history_moves:
-            yield move
+            yield move, False
             
         # Yield Bad Captures (sorted by MVV-LVA)
         bad_captures.sort(reverse=True)
-        for _, move in bad_captures:
-            yield move
-        
+        for _, move, is_check in bad_captures:
+            yield move, is_check
 
-    
     @staticmethod
     def _move_causes_check(game: GameState, move: PositionPair) -> bool:
         # How to check for checking moves FAST?
@@ -796,16 +795,20 @@ class MoveGenerator:
         opponent_king = game.blackKing if game.whiteToMove else game.whiteKing
         if MoveGenerator._piece_attacks_square(game, promo_piece, move.To, opponent_king):
             return True
-        
+
         # next, check for discovered checks
         delta = opponent_king - move.From
         
         # check if delta is along rook, bishop, or queen lines
         directions = []
+        attacker_q = 'Q' if game.whiteToMove else 'q'
+        attacker_o = ''
         if delta.x == 0 or delta.y == 0:
             directions = GameState.rookDirections
+            attacker_o = 'R' if game.whiteToMove else 'r'
         elif abs(delta.x) == abs(delta.y):
             directions = GameState.bishopDirections
+            attacker_o = 'b' if game.whiteToMove else 'B'
         else:
             return False  # not along any line, no discovered check
         
@@ -826,9 +829,8 @@ class MoveGenerator:
                 while current.is_valid():
                     target_piece = game.board[current]
                     if target_piece != '.':
-                        if game.piece_is_movers(target_piece):
-                            if MoveGenerator._piece_attacks_square(game, target_piece, current, opponent_king):
-                                return True
+                        if target_piece == attacker_o or target_piece == attacker_q:
+                            return True
                         break
                     current -= direction
         return False
@@ -1030,7 +1032,7 @@ class Agent:
         return max_val
 
     @staticmethod
-    def _negamax(game: GameState, alpha: int, beta: int, depth: int, ply: int, hash_val: int, start_time: int, time_limit: int) -> int:
+    def _negamax(game: GameState, alpha: int, beta: int, depth: int, ply: int, hash_val: int, start_time: int, time_limit: int, in_check: bool = False) -> int:
         if time.perf_counter() - start_time > time_limit:
             raise TimeoutError()
 
@@ -1063,7 +1065,7 @@ class Agent:
                 return Agent._quiescence(game, alpha, beta, ply, hash_val, Agent.MAX_Q_DEPTH, start_time, time_limit)
 
         # Null Move Pruning
-        if depth >= 3 and not game._current_player_is_in_check():
+        if depth >= 3 and not in_check:
             game.whiteToMove = not game.whiteToMove
             old_en_passant = game.enPassantTarget
             game.enPassantTarget = Position.Null
@@ -1071,7 +1073,7 @@ class Agent:
             DrawDetector.do(new_hash)
 
             reduction = 2
-            value = -Agent._negamax(game, -beta, -beta + 1, depth - 1 - reduction, ply + 1, new_hash, start_time, time_limit)
+            value = -Agent._negamax(game, -beta, -beta + 1, depth - 1 - reduction, ply + 1, new_hash, start_time, time_limit, in_check)
 
             game.whiteToMove = not game.whiteToMove
             game.enPassantTarget = old_en_passant
@@ -1087,12 +1089,16 @@ class Agent:
 
         moves = MoveGenerator.generate_moves(game, memo_entry if memo_entry else Agent.MemoEntry.Default, ply)
 
-        for poistion_pair in moves:
+        for poistion_pair, is_checking in moves:
             info = game._move(poistion_pair.From, poistion_pair.To)
             if not info.IsLegal:
                 game.undo_move(info)
                 continue
 
+            if is_checking is None:
+                # is_checking = game._current_player_is_in_check() # expensive
+                is_checking = MoveGenerator._move_causes_check(game, poistion_pair) # faster
+            
             # LMR
             move_index += 1
 
@@ -1104,37 +1110,23 @@ class Agent:
             if move_index == 1:
                 # --- 1. Principal Variation (PV) Move ---
                 # The first move (best_move from TT or history) is searched at full depth.
-                value = -Agent._negamax(game, -beta, -alpha, depth - 1, ply + 1, new_hash, start_time, time_limit)
+                value = -Agent._negamax(game, -beta, -alpha, depth - 1, ply + 1, new_hash, start_time, time_limit, is_checking)
             else:
                 # --- 2. Non-PV Moves (LMR + Zero Window Search) ---
-                
-                # Calculate the reduction
+
                 reduction = 0
                 is_quiet = (info.ToPiece == '.' and not info.IsPromotion)
                         
-                if depth >= 3 and is_quiet and not info.IsChecking:
-                    #if move_index >= 3:
-                    #    reduction = 1
-                    #if move_index >= 5 and depth >= 5:
-                    #    reduction = 2
+                if depth >= 3 and is_quiet and not is_checking:
                     reduction = int(0.5 + math.log(depth) * math.log(move_index) / 2.0)
-                                
-                    # (Optional) The log-based formula I mentioned is:
-                    # Start with the integer version first, it's safer and faster.
-
-                    # Clamp reduction: Don't reduce too much
                     reduction = max(0, reduction)
                     reduction = min(reduction, depth - 2) # Don't reduce into q-search
 
-                # Search with the reduced depth and a "zero window"
                 new_depth = depth - 1 - reduction
-                value = -Agent._negamax(game, -(alpha + 1), -alpha, new_depth, ply + 1, new_hash, start_time, time_limit)
+                value = -Agent._negamax(game, -(alpha + 1), -alpha, new_depth, ply + 1, new_hash, start_time, time_limit, is_checking)
         
-                # --- 3. Re-search (if LMR was too aggressive) ---
                 if value > alpha:
-                # The zero-window search failed high. This move is *better* than expected.
-                # We must re-search at the *full* depth (depth - 1) with the *full* window.
-                    value = -Agent._negamax(game, -beta, -alpha, depth - 1, ply + 1, new_hash, start_time, time_limit)
+                    value = -Agent._negamax(game, -beta, -alpha, depth - 1, ply + 1, new_hash, start_time, time_limit, is_checking)
 
             DrawDetector.undo(new_hash)
             game.undo_move(info)
@@ -1144,7 +1136,7 @@ class Agent:
                 best_move = info
                 
                 # Update history heuristic for good quiet moves
-                if info.ToPiece == '.' and not info.IsPromotion:
+                if info.ToPiece == '.' and not info.EPPiece == '.' and not info.IsPromotion:
                     # Reward based on remaining depth squared
                     Agent.history_table[info.From.x][info.From.y][info.To.x][info.To.y] += depth * depth
             
@@ -1190,7 +1182,7 @@ class Agent:
         moves = MoveGenerator.generate_moves(game, Agent.MemoEntry.Default, 0)
         best_move = None
         
-        for from_pos, to_pos in moves:
+        for (from_pos, to_pos), is_checking in moves:
             info = game._move(from_pos, to_pos)
             if not info.IsLegal:
                 game.undo_move(info)
@@ -1198,7 +1190,7 @@ class Agent:
             new_hash = GameState.Zobrist.update_hash(hash_val, info)
             DrawDetector.do(new_hash)
             
-            value = -Agent._negamax(game, -beta, -alpha, depth - 1, 1, new_hash, start_time, time_limit)
+            value = -Agent._negamax(game, -beta, -alpha, depth - 1, 1, new_hash, start_time, time_limit, is_checking)
             
             DrawDetector.undo(new_hash)
             game.undo_move(info)
@@ -1384,12 +1376,14 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     move = best_move_so_far
     value = best_value
 
+    is_checking = MoveGenerator._move_causes_check(state, PositionPair(move.From, move.To))
+
     move_suffix = ""
-    if move.IsChecking and is_mating:
+    if is_checking and is_mating:
         move_suffix = "#"
     elif is_mating:
         move_suffix = "§"
-    elif move.IsChecking:
+    elif is_checking:
         move_suffix = "+"
         
     print(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){move_suffix} with eval {value}")
