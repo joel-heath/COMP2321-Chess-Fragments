@@ -107,8 +107,7 @@ def parse_board_string(board_string: str) -> list[list[Square]]:
                 if char in PIECE_MAP:
                     row.append(PIECE_MAP[char]())
                 else:
-                    print(f"Warning: Unknown character '{char}' encountered. Adding empty square.")
-                    row.append(Square())
+                    raise Exception(f"Unknown character '{char}' encountered.")
             
             if row:
                 board.append(row)
@@ -116,23 +115,45 @@ def parse_board_string(board_string: str) -> list[list[Square]]:
     return board
 
 
-game1 = """
+game1 = parse_board_string("""
   0 1 2 3 4
 0 n q k b r
 1 . p . . p
 2 . . . . .
 3 . P . . P
-4 N Q K B R"""
+4 N Q K B R""")
 
-game3 = """
+game3 = parse_board_string("""
   0 1 2 3 4
 0 n q k b r
 1 p p p p p
 2 . . . . .
 3 P P P P P
-4 N Q K B R"""
+4 N Q K B R""")
 
-game1 = parse_board_string(game1)
-game3 = parse_board_string(game3)
+timeout = parse_board_string("""
+  0 1 2 3 4
+0 . . p . .
+1 p b k . .
+2 . . . . .
+3 . . K B P
+4 . . P . .
+""")
 
-sample0 = game3
+test = parse_board_string("""
+  0 1 2 3 4
+0 . . Q . .
+1 . . . . .
+2 . . . k p
+3 . K b . .
+4 . . . . .""")
+
+fork = parse_board_string("""
+  0 1 2 3 4
+0 . . . . .
+1 . Q . . p
+2 K . . . k
+3 . . p . .
+4 . . . . .""")
+
+sample0 = fork
