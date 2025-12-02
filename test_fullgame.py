@@ -85,6 +85,9 @@ def testgame_timeout(p_white, p_black, board_sample):
         except KeyboardInterrupt:
             print(f"=== Game ended by keyboard interuption ===")
             sys.exit()
+    
+    t_end = time.perf_counter()
+    print(f"Total game time: {t_end - t_start:.2f} seconds")
 
 if __name__ == "__main__":
     testgame_timeout(p_white=agent, p_black=opponent, board_sample=sample0)

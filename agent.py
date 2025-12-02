@@ -922,25 +922,163 @@ class Agent:
 
     memo = {}
 
-    @staticmethod
-    def _piece_to_points(piece: str) -> int:
-        return {
-            'P': 1, 'p': 1,
-            'T': 1, 't': 1,
-            'N': 3, 'n': 3,
-            'B': 3, 'b': 3,
-            'R': 5, 'r': 5,
-            'Q': 9, 'q': 9,
-            'K': 0, 'k': 0,
-        }.get(piece, 0)
+    # -----------------------------------------------------------------------------
+    # AI-GENERATED PIECE-SQUARE TABLES (White Perspective)
+    # Values are additive centipawns (e.g., +10 means 0.1 pawn advantage)
+    # -----------------------------------------------------------------------------
+
+    # PAWN
+    # Pawns start on Rank 1 or 2 (depending on setup). 
+    # Rank 4 is promotion (value usually handled by engine promotion logic, so 0 here).
+    # Ranks 2 and 3 are critical.
+    pst_pawn = [
+        [  0,   0,   0,   0,   0], # Rank 0 (Impossible)
+        [  5,  10,  10,  10,   5], # Rank 1 (Start/Base)
+        [ 20,  30,  40,  30,  20], # Rank 2 (Mid-field, good control)
+        [ 50,  70,  90,  70,  50], # Rank 3 (Threatening promotion)
+        [  0,   0,   0,   0,   0], # Rank 4 (Promoted)
+    ]
+
+    # KNIGHT
+    # On 5x5, the center (2,2) hits 8 squares. 
+    # Corners (0,0) hit only 2. Centralization is non-negotiable.
+    pst_knight = [
+        [-20, -10, -10, -10, -20], # Rank 0
+        [-10,   5,  10,   5, -10], # Rank 1
+        [-10,  15,  30,  15, -10], # Rank 2 (The golden square)
+        [-10,   5,  10,   5, -10], # Rank 3
+        [-20, -10, -10, -10, -20], # Rank 4
+    ]
+
+    # BISHOP
+    # Long diagonals are short on 5x5. 
+    # (2,2) is the only square that accesses two full length-5 diagonals.
+    pst_bishop = [
+        [-10,  -5, -10,  -5, -10], # Rank 0
+        [ -5,   5,   5,   5,  -5], # Rank 1
+        [-10,  10,  20,  10, -10], # Rank 2
+        [ -5,   5,   5,   5,  -5], # Rank 3
+        [-10,  -5, -10,  -5, -10], # Rank 4
+    ]
+
+    # QUEEN
+    # High mobility. Should avoid corners where it can be trapped by the Knook.
+    pst_queen = [
+        [ -5,  -5,  -5,  -5,  -5], # Rank 0
+        [ -5,   5,   5,   5,  -5], # Rank 1
+        [ -5,  10,  15,  10,  -5], # Rank 2
+        [ -5,   5,   5,   5,  -5], # Rank 3
+        [ -5,  -5,  -5,  -5,  -5], # Rank 4
+    ]
+
+    # RIGHT
+    # This piece is terrifying. It hits almost everything from everywhere.
+    # The table rewards centralization slightly, but mostly punishes passive placement.
+    # Even on the edge, it is strong, but center is best.
+    pst_right = [
+        [-15,  -5,  -5,  -5, -15], # Rank 0
+        [ -5,   5,  10,   5,  -5], # Rank 1
+        [ -5,  10,  20,  10,  -5], # Rank 2 (Center is King)
+        [ -5,   5,  10,   5,  -5], # Rank 3
+        [-15,  -5,  -5,  -5, -15], # Rank 4
+    ]
+
+    # KING (Middlegame)
+    # Safety first. The board is small; corners are the only relative safe haven.
+    # Center is death in the opening.
+    pst_king_mg = [
+        [ 20,  30,  10,  30,  20], # Rank 0 (Hide in B/D files)
+        [ 10,   0, -20,   0,  10], # Rank 1
+        [-20, -30, -50, -30, -20], # Rank 2 (Suicide zone)
+        [-30, -40, -50, -40, -30], # Rank 3
+        [-50, -50, -50, -50, -50], # Rank 4
+    ]
+
+    # KING (Endgame)
+    # In the endgame, the King must become an active fighting piece.
+    # Centralize to support pawns.
+    pst_king_eg = [
+        [-20, -10, -10, -10, -20], # Rank 0
+        [-10,  10,  20,  10, -10], # Rank 1
+        [-10,  20,  40,  20, -10], # Rank 2 (Maximum activity)
+        [-10,  10,  20,  10, -10], # Rank 3
+        [-20, -10, -10, -10, -20], # Rank 4
+    ]
 
     @staticmethod
+    def _piece_to_points(piece: str) -> int:
+        if piece == 'P' or piece == 'p' or piece == 'T' or piece == 't':
+            return 100
+        if piece == 'N' or piece == 'n' or piece == 'B' or piece == 'b':
+            return 300
+        if piece == 'R' or piece == 'r':
+            return 600
+        if piece == 'Q' or piece == 'q':
+            return 900
+        return 0
+    
+    @staticmethod
+    def _position_to_points(position: Position, piece: str, is_endgame: bool = False) -> int:
+        x = position.x
+        y = position.y if piece.isupper() else 4 - position.y
+        if piece == 'P' or piece == 'T' or piece == 'p' or piece == 't':
+            return Agent.pst_pawn[y][x]
+        if piece == 'N' or piece == 'n':
+            return Agent.pst_knight[y][x]
+        if piece == 'B' or piece == 'b':
+            return Agent.pst_bishop[y][x]
+        if piece == 'R' or piece == 'r':
+            return Agent.pst_right[y][x]
+        if piece == 'Q' or piece == 'q':
+            return Agent.pst_queen[y][x]
+        if piece == 'K' or piece == 'k':
+            if is_endgame:
+                return Agent.pst_king_eg[y][x]
+            else:
+                return Agent.pst_king_mg[y][x]
+        return 0
+    
+    
+    # highest heuristic would be all pieces, all pawns promoted, all on the best positions
+    # (9 + 3 + 3 + 6 + 0 + 9 * 5) * 100 + 90 * 10 = 7500
+    # so checkmate will be scored at 10,000
+    @staticmethod
     def _heuristic(game: GameState) -> int:
-        heuristic = 0
+        # is endgame? game starts with 20 pieces and (9 + 3 + 3 + 6 + 0 + 5*1) = 2600 centipawns
+        # total_material = 0
+        # total_pieces = 0
+        # for piece, pos in game.get_positions():
+        #     total_material += Agent._piece_to_points(piece)
+        #     if piece != '.':
+        #         total_pieces += 1
+        # is_endgame = total_material <= n or total_pieces <= m
+
+        # but since the board is small, we need to be wary of the nukes: knooks and queens
+        # if enemy knook or queen is on the board, we must hide our king
+        is_endgame = True
         for piece, pos in game.get_positions():
+            nukeQ = 'q' if game.whiteToMove else 'Q'
+            nukeR = 'r' if game.whiteToMove else 'R'
+            if piece == nukeQ or piece == nukeR:
+                is_endgame = False
+                break
+        
+        heuristic = 0
+        total_pieces = 0
+        for piece, pos in game.get_positions():
+            total_pieces += 1
             is_for = game.piece_is_movers(piece)
-            value = Agent._piece_to_points(piece)
+            value = Agent._piece_to_points(piece) + Agent._position_to_points(pos, piece, is_endgame)
             heuristic += value if is_for else -value
+
+        # finally, if we are winning, value simplification, as that will make it easier to convert to checkmate
+        # if we are losing, value complicating the position to avoid losing quickly
+        # each piece on the board is worth 1 centipawn, so all pieces on the board is worth 20 centipawns
+        if heuristic > 0:
+            heuristic -= total_pieces
+        elif heuristic < 0:
+            heuristic += total_pieces
+
         return heuristic
 
     @staticmethod
@@ -1071,11 +1209,13 @@ class Agent:
         # Futility pruning
         if (depth == 1 or depth == 2) and not in_check:
             static_eval = Agent._heuristic(game)
-            futility_margin = 3 - depth # 1 or 2 pawns
+            futility_margin = 100 * (3 - depth) # 1 or 2 pawns
             if static_eval + futility_margin < alpha:
                 return Agent._quiescence(game, alpha, beta, ply, hash_val, Agent.MAX_Q_DEPTH, start_time, time_limit)
 
         # Null Move Pruning
+        # We use a zero-width window search after a null move to see if we can
+        # cause a beta-cutoff. If we can, we assume the position is so good
         if depth >= 3 and not in_check:
             game.whiteToMove = not game.whiteToMove
             old_en_passant = game.enPassantTarget
@@ -1173,7 +1313,7 @@ class Agent:
                 break
         
         if move_index == 0: # best_move == MoveInfo.Default:
-            return -(1000 + depth) # no legal moves, you have been mated
+            return -(10_000 + depth) # no legal moves, you have been mated
 
         memo_type = Agent.MemoEntryType.Exact
         if max_val <= initial_alpha:
@@ -1379,8 +1519,9 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
         print(f"Searching depth {depth}...")
 
         # --- Aspiration Window Logic ---
-        alpha = best_value - 1
-        beta = best_value + 1
+        # we will try 25 centipawn windows around the last best value
+        alpha = best_value - 25 
+        beta = best_value + 25
 
         res = Agent.find_best_move(state, depth, start_time, timeout, hash_val, alpha, beta)
         if res is None:
@@ -1406,7 +1547,7 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
         best_value = value
 
         # Check for forced mate
-        if value >= 1000: # if the algorithm is optimal <=> is_mating = value == (1000 + depth - 1), but LMR, futility and null move pruning all make it non-optimal
+        if value >= 10_000: # if the algorithm is optimal <=> is_mating = value == (10_000 + depth - 1), but LMR, futility and null move pruning all make it non-optimal
             print(f"Found mate at depth {depth}!")
             break # No need to search deeper
 
@@ -1418,7 +1559,7 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     DEBUG = True
     if DEBUG:
         is_checking = MoveGenerator._move_causes_check(state, PositionPair(move.From, move.To))
-        is_mating = 1000 <= value <= 1001
+        is_mating = 10_000 <= value <= 10_001
 
         move_suffix = ""
         if is_checking and is_mating:
