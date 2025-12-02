@@ -156,4 +156,4 @@ fork = parse_board_string("""
 3 . . p . .
 4 . . . . .""")
 
-sample0 = fork
+#sample0 = fork
