@@ -1473,8 +1473,15 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     cm_board: CM_Board = board
     cm_player: CM_Player = player
     ply_id: int = var[0]
-    timeout: float = var[1] - 1.0
+    timeout: float = var[1] - 0.1
     
+    # CRITICAL: maybe the process is persistent, so we musnt allow the state to accumulate
+    if ply_id <= 1:
+        DrawDetector.positions.clear()
+        Agent.memo.clear()
+        Agent.killer_moves = [[None, None] for _ in range(Agent.MAX_SEARCH_DEPTH)]
+        Agent.history_table = [[[[0 for _ in range(5)] for _ in range(5)] for _ in range(5)] for _ in range(5)]
+
     # Rip out the state from private attributes and methods from chessmaker
     # into our GameState
     epTarget: CM_Position | None = None
@@ -1570,7 +1577,6 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
             move_suffix = "+"
             
         print(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){move_suffix} with eval {value}")
-
 
     DrawDetector.do(GameState.Zobrist.update_hash(hash_val, move))  # do our move
 
