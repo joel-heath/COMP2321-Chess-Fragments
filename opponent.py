@@ -43,6 +43,27 @@ def scripted_opponent(board: Board, player: Player, var: list[int]) -> tuple[Pie
     # If code reaches here, the move was not valid or the piece wasn't found
     raise ValueError(f"Opponent Error: Could not find valid move for {target_from} -> {target_to} on current board.")
 
+def real_opponent(board, player, var):
+    target_from = input("Enter the position of the piece you want to move (e.g., e2): ")
+    target_to = input("Enter the position you want to move to (e.g., e4): ")
+
+    # Helper to convert CM_Position to "a1" string
+    def pos_to_str(pos: Position) -> str:
+        return f"{chr(ord('a') + pos.x)}{5 - pos.y}"
+    # Search for the piece and move on the actual board
+    for piece in board.get_player_pieces(player):
+        
+        # Check if piece is on the source square
+        if pos_to_str(piece.position) == target_from:
+            
+            # Check the piece's legal moves
+            for move_opt in piece.get_move_options():
+                if pos_to_str(move_opt.position) == target_to:
+                    print(f"[Opponent] Playing {target_from} -> {target_to}")
+                    return piece, move_opt
+    # If code reaches here, the move was not valid or the piece wasn't found
+    raise ValueError(f"Opponent Error: Could not find valid move for {target_from} -> {target_to} on current board.")
+
 def deterministic_opponent(board, player, var):
     return list_legal_moves_for(board, player)[0]
 
@@ -50,6 +71,7 @@ def opponent(board, player, var):
     # return deterministic_opponent(board, player, var)
     # return agent(board, player, var)
     # return scripted_opponent(board, player, var)
+    # return real_opponent(board, player, var)
 
     """
     This is an example of an random-move Opponent

@@ -1,3 +1,4 @@
+from extension.board_utils import take_notes
 # from extension.board_utils import list_legal_moves_for, copy_piece_move, take_notes
 # from extension.board_rules import only_2kings, cannot_move
 from chessmaker.chess.base import Board as CM_Board, Player as CM_Player, Piece as CM_Piece, MoveOption as CM_MoveOption, Position as CM_Position, Square as CM_Square
@@ -171,7 +172,7 @@ R B K Q N
         return "".join(sb)
 
     def print_board(self):
-        print(str(self))
+        take_notes(str(self))
 
 
 # =============================================================================
@@ -1475,6 +1476,8 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     ply_id: int = var[0]
     timeout: float = var[1] - 0.1
     
+    take_notes(f"=== Ply {ply_id} ({player}) ===")
+
     # CRITICAL: maybe the process is persistent, so we musnt allow the state to accumulate
     if ply_id <= 1:
         DrawDetector.positions.clear()
@@ -1515,15 +1518,10 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     hash_val = GameState.Zobrist.compute_hash(state)
     DrawDetector.do(hash_val)  # do opponents move
 
-    true_state = capture_state(state)
-
     while True:
-        if (capture_state(state) != true_state):
-            raise Exception("State mismatch detected!")
-
         depth += 1
             
-        print(f"Searching depth {depth}...")
+        take_notes(f"Searching depth {depth}...")
 
         # --- Aspiration Window Logic ---
         # we will try 25 centipawn windows around the last best value
@@ -1532,20 +1530,20 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
 
         res = Agent.find_best_move(state, depth, start_time, timeout, hash_val, alpha, beta)
         if res is None:
-            print(f"Timeout imminent. Returning best move from depth {depth - 1}")
+            take_notes(f"Timeout imminent. Returning best move from depth {depth - 1}")
             break
 
         move, value = res
 
         # 3. Check if the search "failed"
         if value <= alpha or value >= beta:
-            print(f"  Aspiration failed (a={alpha}, b={beta}, v={value}). Re-searching with full window...")
+            take_notes(f"  Aspiration failed (a={alpha}, b={beta}, v={value}). Re-searching with full window...")
             # 4. Re-search with a full window
             alpha = -1_000_000_000
             beta =  1_000_000_000
             res = Agent.find_best_move(state, depth, start_time, timeout, hash_val, alpha, beta)
             if res is None:
-                print(f"Timeout imminent. Returning best move from depth {depth - 1}")
+                take_notes(f"Timeout imminent. Returning best move from depth {depth - 1}")
                 break
             move, value = res
         # --- End of Aspiration Logic ---
@@ -1555,7 +1553,7 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
 
         # Check for forced mate
         if value >= 10_000: # if the algorithm is optimal <=> is_mating = value == (10_000 + depth - 1), but LMR, futility and null move pruning all make it non-optimal
-            print(f"Found mate at depth {depth}!")
+            take_notes(f"Found mate at depth {depth}!")
             break # No need to search deeper
 
     # --- END OF LOOP ---
@@ -1563,21 +1561,21 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     move = best_move_so_far
     value = best_value
 
-    DEBUG = True
-    if DEBUG:
-        is_checking = MoveGenerator._move_causes_check(state, PositionPair(move.From, move.To))
-        is_mating = 10_000 <= value <= 10_001
-
-        move_suffix = ""
-        if is_checking and is_mating:
-            move_suffix = "#"
-        elif is_mating:
-            move_suffix = "§"
-        elif is_checking:
-            move_suffix = "+"
-            
-        print(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){move_suffix} with eval {value}")
-
     DrawDetector.do(GameState.Zobrist.update_hash(hash_val, move))  # do our move
+
+
+    # DELETE AFTER DEBUG: VERY MUCH A WASTE OF TIME
+    is_checking = MoveGenerator._move_causes_check(state, PositionPair(move.From, move.To))
+    is_mating = value == 10_001
+
+    move_suffix = ""
+    if is_checking and is_mating:
+        move_suffix = "#"
+    elif is_mating:
+        move_suffix = "§"
+    elif is_checking:
+        move_suffix = "+"
+        
+    take_notes(f"{player} moved from {move.From} ({move.FromPiece}) to {move.To} ({move.ToPiece}){move_suffix} with eval {value}")
 
     return find_move_on_cm_board(cm_board, move)
