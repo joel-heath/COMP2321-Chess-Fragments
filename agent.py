@@ -1129,7 +1129,7 @@ class Agent:
             # We are failing high. Store this as a Depth 0 LowerBound.
             # We don't need to check for overwrites, as storing a bound
             # that causes a cutoff is always good.
-            Agent.memo[hash_val] = Agent.MemoEntry(stand_pat_score, q_search_tt_depth, Agent.MemoEntryType.LowerBound, ReducedMoveInfo(Position.Null, Position.Null))
+            Agent.memo[hash_val] = Agent.MemoEntry(stand_pat_score, q_search_tt_depth, Agent.MemoEntryType.LowerBound, ReducedMoveInfo(Position.Null, Position.Null), False)
             return beta
         
         alpha = max(alpha, stand_pat_score)
