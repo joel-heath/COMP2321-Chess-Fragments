@@ -1431,38 +1431,13 @@ def find_move_on_cm_board(board: CM_Board, move: MoveInfo) -> CM_Move:
 
 
 def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
-    """
-    This is an example of your designed Agent
-
-    Parameters
-    ----------
-    board: the current chess board
-    player: your assigned player role (white or black)
-    var:  [ply, THINKING_TIME_BUDGET] a list cotaining the ply ID and the thinking_time_budget (secs)
-
-    Returns
-    -------
-    piece: your selected chess piece
-    move_opt: your selected move of your selected chess piece
-    
-    Hints:
-    -----
-    - List of players on the current board game: list(board.players) - default list: [Player (white), Player (black)]
-    - board.players[0].name = "white" and board.players[1].name = "black"
-    - Name of the player assigned to the Agent (either "white" or "black"): player.name
-    - list of pieces of the current player: list(board.get_player_pieces(player))
-    - List of pieces and corresponding moves for each pieces of the player: piece, move_opt = list_legal_moves_for(board, player)
-    - From var: ply ID = var[0], timeout = var[1]
-    - Use the timeout variable together with time.perf_counter()
-    to ensure the agent returns its best move before the time limit expires.
-    """
     start_time = time.perf_counter()
 
     global state
     cm_board: CM_Board = board
     cm_player: CM_Player = player
     ply_id: int = var[0]
-    timeout: float = var[1] - 0.5
+    timeout: float = var[1] - 1
     
 
     # CRITICAL: maybe the process is persistent, so we musnt allow the state to accumulate
