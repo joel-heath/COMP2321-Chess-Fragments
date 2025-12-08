@@ -1474,7 +1474,7 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
     cm_board: CM_Board = board
     cm_player: CM_Player = player
     ply_id: int = var[0]
-    timeout: float = var[1] - 0.1
+    timeout: float = var[1] - 0.5
     
     take_notes(f"=== Ply {ply_id} ({player}) ===")
 
@@ -1566,7 +1566,7 @@ def agent(board: CM_Board, player: CM_Player, var: list[int]) -> CM_Move:
 
     # DELETE AFTER DEBUG: VERY MUCH A WASTE OF TIME
     is_checking = MoveGenerator._move_causes_check(state, PositionPair(move.From, move.To))
-    is_mating = value == 10_001
+    is_mating = depth == 2 and value == 10_001
 
     move_suffix = ""
     if is_checking and is_mating:
